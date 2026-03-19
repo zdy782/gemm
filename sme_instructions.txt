@@ -1,0 +1,1410 @@
+FMOPA (widening, 2-way, FP16 to FP32)
+Half-precision sum of outer products to single-precision, accumulating
+
+This instruction works with a 32-bit element ZA tile.
+
+This instruction widens the SVLS×2 sub-matrix of half-precision values held in the first source vector to single-precision values and multiplies it by the widened 2×SVLS sub-matrix of half-precision values in the second source vector to single-precision values.
+
+Each source vector is independently predicated by a corresponding governing predicate. When a 16-bit source element is Inactive it is treated as having the value +0.0, but if both pairs of source vector elements that correspond to a 32-bit destination element contain Inactive elements, then the destination element remains unmodified.
+
+The resulting SVLS×SVLS single-precision sum of outer products is then destructively added to the single-precision destination tile. This is equivalent to performing a 2-way dot product and accumulate to each of the destination tile elements.
+
+Each 32-bit container of the first source vector holds 2 consecutive column elements of each row of a SVLS×2 sub-matrix. Similarly, each 32-bit container of the second source vector holds 2 consecutive row elements of each column of a 2×SVLS sub-matrix.
+
+This instruction follows SME ZA-targeting floating-point behaviors.
+
+SME
+(FEAT_SME)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	0	0	0	0	0	0	1	1	0	1	Zm	Pm	Pn	Zn	0	0	0	ZAda
+S		
+Encoding
+FMOPA <ZAda>.S, <Pn>/M, <Pm>/M, <Zn>.H, <Zm>.H
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME) then EndOfDecode(Decode_UNDEF); end;
+let a : integer = UInt(Pn);
+let b : integer = UInt(Pm);
+let n : integer = UInt(Zn);
+let m : integer = UInt(Zm);
+let da : integer = UInt(ZAda);
+Assembler Symbols
+<ZAda>	
+Is the name of the ZA tile ZA0-ZA3, encoded in the "ZAda" field.
+
+<Pn>	
+Is the name of the first governing scalable predicate register P0-P7, encoded in the "Pn" field.
+
+<Pm>	
+Is the name of the second governing scalable predicate register P0-P7, encoded in the "Pm" field.
+
+<Zn>	
+Is the name of the first source scalable vector register, encoded in the "Zn" field.
+
+<Zm>	
+Is the name of the second source scalable vector register, encoded in the "Zm" field.
+
+Operation
+
+CheckStreamingSVEAndZAEnabled();
+let VL : integer{} = CurrentVL();
+let PL : integer{} = VL DIV 8;
+let dim : integer{} = VL DIV 32;
+let mask1 : bits(PL) = P{}(a);
+let mask2 : bits(PL) = P{}(b);
+let operand1 : bits(VL) = Z{}(n);
+let operand2 : bits(VL) = Z{}(m);
+let operand3 : bits(dim*dim*32) = ZAtile{}(da, 32);
+var result : bits(dim*dim*32);
+
+for row = 0 to dim-1 do
+    for col = 0 to dim-1 do
+        // determine row/col predicates
+        let prow_0 : boolean = (ActivePredicateElement{PL}(mask1, 2*row + 0, 16));
+        let prow_1 : boolean = (ActivePredicateElement{PL}(mask1, 2*row + 1, 16));
+        let pcol_0 : boolean = (ActivePredicateElement{PL}(mask2, 2*col + 0, 16));
+        let pcol_1 : boolean = (ActivePredicateElement{PL}(mask2, 2*col + 1, 16));
+
+        var sum : bits(32) = operand3[(row*dim+col)*:32];
+        if (prow_0 && pcol_0) || (prow_1 && pcol_1) then
+            let erow_0 : bits(16) = (if prow_0 then operand1[(2*row + 0)*:16]
+                                        else FPZero{16}('0'));
+            let erow_1 : bits(16) = (if prow_1 then operand1[(2*row + 1)*:16]
+                                        else FPZero{16}('0'));
+            let ecol_0 : bits(16) = (if pcol_0 then operand2[(2*col + 0)*:16]
+                                        else FPZero{16}('0'));
+            let ecol_1 : bits(16) = (if pcol_1 then operand2[(2*col + 1)*:16]
+                                        else FPZero{16}('0'));
+            sum = FPDotAdd_ZA(sum, erow_0, erow_1, ecol_0, ecol_1, FPCR());
+
+        end;
+        result[(row*dim+col)*:32] = sum;
+    end;
+end;
+
+ZAtile{dim*dim*32}(da, 32) = result;
+
+
+FMOPA (non-widening)
+Floating-point outer product, accumulating
+
+The half-precision variant works with a 16-bit element ZA tile.
+
+The single-precision variant works with a 32-bit element ZA tile.
+
+The double-precision variant works with a 64-bit element ZA tile.
+
+This instruction generates an outer product of the first source vector and the second source vector. In case of the half-precision variant, the first source is SVLH×1 vector and the second source is 1×SVLH vector. In case of the single-precision variant, the first source is SVLS×1 vector and the second source is 1×SVLS vector. In case of the double-precision variant, the first source is SVLD×1 vector and the second source is 1×SVLD vector.
+
+Each source vector is independently predicated by a corresponding governing predicate. When either source vector element is Inactive the corresponding destination tile element remains unmodified.
+
+The resulting outer product, SVLH×SVLH in case of half-precision variant, SVLS×SVLS in case of single-precision variant or SVLD×SVLD in case of double-precision variant, is then destructively added to the destination tile. This is equivalent to performing a single multiply-accumulate to each of the destination tile elements.
+
+This instruction follows SME ZA-targeting floating-point behaviors.
+
+ID_AA64SMFR0_EL1.F64F64 indicates whether the double-precision variant is implemented, and ID_AA64SMFR0_EL1.F16F16 indicates whether the half-precision variant is implemented.
+
+It has encodings from 3 classes: Half-precision , Single-precision and Double-precision
+
+Half-precision
+(FEAT_SME_F16F16)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	0	0	0	0	0	0	1	1	0	0	Zm	Pm	Pn	Zn	0	1	0	0	ZAda
+S			
+Encoding
+FMOPA <ZAda>.H, <Pn>/M, <Pm>/M, <Zn>.H, <Zm>.H
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME_F16F16) then EndOfDecode(Decode_UNDEF);
+constant integer esize = 16;
+constant integer a = UInt(Pn);
+constant integer b = UInt(Pm);
+constant integer n = UInt(Zn);
+constant integer m = UInt(Zm);
+constant integer da = UInt(ZAda);
+Single-precision
+(FEAT_SME)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	0	0	0	0	0	0	0	1	0	0	Zm	Pm	Pn	Zn	0	0	0	ZAda
+S		
+Encoding
+FMOPA <ZAda>.S, <Pn>/M, <Pm>/M, <Zn>.S, <Zm>.S
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME) then EndOfDecode(Decode_UNDEF);
+constant integer esize = 32;
+constant integer a = UInt(Pn);
+constant integer b = UInt(Pm);
+constant integer n = UInt(Zn);
+constant integer m = UInt(Zm);
+constant integer da = UInt(ZAda);
+Double-precision
+(FEAT_SME_F64F64)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	0	0	0	0	0	0	0	1	1	0	Zm	Pm	Pn	Zn	0	0	ZAda
+S		
+Encoding
+FMOPA <ZAda>.D, <Pn>/M, <Pm>/M, <Zn>.D, <Zm>.D
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME_F64F64) then EndOfDecode(Decode_UNDEF);
+constant integer esize = 64;
+constant integer a = UInt(Pn);
+constant integer b = UInt(Pm);
+constant integer n = UInt(Zn);
+constant integer m = UInt(Zm);
+constant integer da = UInt(ZAda);
+Assembler Symbols
+<ZAda>	
+For the "Half-precision" variant: is the name of the ZA tile ZA0-ZA1, encoded in the "ZAda" field.
+
+For the "Single-precision" variant: is the name of the ZA tile ZA0-ZA3, encoded in the "ZAda" field.
+
+For the "Double-precision" variant: is the name of the ZA tile ZA0-ZA7, encoded in the "ZAda" field.
+
+<Pn>	
+Is the name of the first governing scalable predicate register P0-P7, encoded in the "Pn" field.
+
+<Pm>	
+Is the name of the second governing scalable predicate register P0-P7, encoded in the "Pm" field.
+
+<Zn>	
+Is the name of the first source scalable vector register, encoded in the "Zn" field.
+
+<Zm>	
+Is the name of the second source scalable vector register, encoded in the "Zm" field.
+
+Operation
+
+CheckStreamingSVEAndZAEnabled();
+constant integer VL = CurrentVL;
+constant integer PL = VL DIV 8;
+constant integer dim = VL DIV esize;
+constant bits(PL) mask1 = P[a, PL];
+constant bits(PL) mask2 = P[b, PL];
+constant bits(VL) op1 = Z[n, VL];
+constant bits(VL) op2 = Z[m, VL];
+constant bits(dim*dim*esize) op3 = ZAtile[da, esize, dim*dim*esize];
+bits(dim*dim*esize) result;
+
+for row = 0 to dim-1
+    for col = 0 to dim-1
+        constant bits(esize) elem2 = Elem[op2, col, esize];
+        constant bits(esize) elem3 = Elem[op3, row*dim+col, esize];
+
+        if (ActivePredicateElement(mask1, row, esize) &&
+              ActivePredicateElement(mask2, col, esize)) then
+            constant bits(esize) elem1 = Elem[op1, row, esize];
+            Elem[result, row*dim+col, esize] = FPMulAdd_ZA(elem3, elem1, elem2, FPCR);
+        else
+            Elem[result, row*dim+col, esize] = elem3;
+
+ZAtile[da, esize, dim*dim*esize] = result;
+
+
+LD1W (scalar plus immediate, strided registers)
+Contiguous load of words to multiple strided vectors (immediate index)
+
+This instruction performs a contiguous load of unsigned words to elements of two or four strided vector registers from the memory address generated by a 64-bit scalar base and immediate index that is multiplied by the vector's in-memory size, irrespective of predication, and added to the base address.
+
+Inactive elements will not cause a read from Device memory or signal a fault, and are set to zero in the destination vector.
+
+It has encodings from 2 classes: Two registers and Four registers
+
+Two registers
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	0	1	0	0	0	0	1	0	1	0	0	imm4	0	1	0	PNg	Rn	T	0	Zt
+msz				N	
+Encoding
+LD1W { <Zt1>.S, <Zt2>.S }, <PNg>/Z, [<Xn|SP>{, #<imm>, MUL VL}]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF);
+constant integer n = UInt(Rn);
+constant integer g = UInt('1':PNg);
+constant integer nreg = 2;
+constant integer tstride = 8;
+constant integer t = UInt(T:'0':Zt);
+constant integer esize = 32;
+constant integer offset = SInt(imm4);
+Four registers
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	0	1	0	0	0	0	1	0	1	0	0	imm4	1	1	0	PNg	Rn	T	0	0	Zt
+msz				N		
+Encoding
+LD1W { <Zt1>.S, <Zt2>.S, <Zt3>.S, <Zt4>.S }, <PNg>/Z, [<Xn|SP>{, #<imm>, MUL VL}]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF);
+constant integer n = UInt(Rn);
+constant integer g = UInt('1':PNg);
+constant integer nreg = 4;
+constant integer tstride = 4;
+constant integer t = UInt(T:'00':Zt);
+constant integer esize = 32;
+constant integer offset = SInt(imm4);
+Assembler Symbols
+<Zt1>	
+For the "Two registers" variant: is the name of the first scalable vector register Z0-Z7 or Z16-Z23 to be transferred, encoded as "T:'0':Zt".
+
+For the "Four registers" variant: is the name of the first scalable vector register Z0-Z3 or Z16-Z19 to be transferred, encoded as "T:'00':Zt".
+
+<Zt2>	
+For the "Two registers" variant: is the name of the second scalable vector register Z8-Z15 or Z24-Z31 to be transferred, encoded as "T:'1':Zt".
+
+For the "Four registers" variant: is the name of the second scalable vector register Z4-Z7 or Z20-Z23 to be transferred, encoded as "T:'01':Zt".
+
+<PNg>	
+Is the name of the governing scalable predicate register PN8-PN15, with predicate-as-counter encoding, encoded in the "PNg" field.
+
+<Xn|SP>	
+Is the 64-bit name of the general-purpose base register or stack pointer, encoded in the "Rn" field.
+
+<imm>	
+For the "Two registers" variant: is the optional signed immediate vector offset, a multiple of 2 in the range -16 to 14, defaulting to 0, encoded in the "imm4" field.
+
+For the "Four registers" variant: is the optional signed immediate vector offset, a multiple of 4 in the range -32 to 28, defaulting to 0, encoded in the "imm4" field.
+
+<Zt3>	
+Is the name of the third scalable vector register Z8-Z11 or Z24-Z27 to be transferred, encoded as "T:'10':Zt".
+
+<Zt4>	
+Is the name of the fourth scalable vector register Z12-Z15 or Z28-Z31 to be transferred, encoded as "T:'11':Zt".
+
+Operation
+
+CheckStreamingSVEEnabled();
+constant integer VL = CurrentVL;
+constant integer PL = VL DIV 8;
+constant integer elements = VL DIV esize;
+constant integer mbytes = esize DIV 8;
+bits(64) base;
+bits(64) addr;
+constant bits(PL) pred = P[g, PL];
+constant bits(PL * nreg) mask = CounterToPredicate(pred<15:0>, PL * nreg);
+array [0..3] of bits(VL) values;
+constant boolean contiguous = TRUE;
+constant boolean nontemporal = FALSE;
+integer transfer = t;
+constant boolean tagchecked = n != 31;
+constant AccessDescriptor accdesc = CreateAccDescSVE(MemOp_LOAD, nontemporal, contiguous,
+                                                     tagchecked);
+
+if !AnyActiveElement(mask, esize) then
+    if n == 31 && ConstrainUnpredictableBool(Unpredictable_CHECKSPNONEACTIVE) then
+        CheckSPAlignment();
+else
+    if n == 31 then CheckSPAlignment();
+
+base = if n == 31 then SP[64] else X[n, 64];
+addr = AddressAdd(base, offset * nreg * elements * mbytes, accdesc);
+
+for r = 0 to nreg-1
+    for e = 0 to elements-1
+        if ActivePredicateElement(mask, r * elements + e, esize) then
+            Elem[values[r], e, esize] = Mem[addr, mbytes, accdesc];
+        else
+            Elem[values[r], e, esize] = Zeros(esize);
+        addr = AddressIncrement(addr, mbytes, accdesc);
+
+for r = 0 to nreg-1
+    Z[transfer, VL] = values[r];
+    transfer = transfer + tstride;
+Operational information
+This instruction is a data-independent-time instruction as described in About PSTATE.DIT.
+MOVA (array to vector, four registers)
+Move four ZA single-vector groups to Z four-vector operand
+
+This instruction operates on four ZA single-vector groups.
+
+The single-vector group within each quarter of the ZA array is selected by the sum of the vector select register and offset, modulo quarter the number of ZA array vectors.
+
+The vector group symbol VGx4 indicates that the instruction operates on four ZA single-vector groups.
+
+The preferred disassembly syntax uses a 64-bit element size, but an assembler should accept any element size if it is used consistently for all operands. The vector group symbol is preferred for disassembly, but optional in assembler source code.
+
+This instruction is unpredicated.
+
+This instruction is used by the alias MOV (array to vector, four registers).
+
+SME2
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	0	0	0	0	0	0	0	0	1	1	0	0	Rv	0	1	1	0	0	off3	Zd	0	0
+Encoding
+MOVA { <Zd1>.D-<Zd4>.D }, ZA.D[<Wv>, <offs>{, VGx4}]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF);
+constant integer v = UInt('010':Rv);
+constant integer offset = UInt(off3);
+constant integer d = UInt(Zd:'00');
+constant integer nreg = 4;
+Assembler Symbols
+<Zd1>	
+Is the name of the first scalable vector register of the destination multi-vector group, encoded as "Zd" times 4.
+
+<Zd4>	
+Is the name of the fourth scalable vector register of the destination multi-vector group, encoded as "Zd" times 4 plus 3.
+
+<Wv>	
+Is the 32-bit name of the vector select register W8-W11, encoded in the "Rv" field.
+
+<offs>	
+Is the vector select offset, in the range 0 to 7, encoded in the "off3" field.
+
+Operation
+
+CheckStreamingSVEAndZAEnabled();
+constant integer VL = CurrentVL;
+constant integer vectors = VL DIV 8;
+constant integer vstride = vectors DIV nreg;
+constant bits(32) vbase = X[v, 32];
+integer vec = (UInt(vbase) + offset) MOD vstride;
+
+for r = 0 to nreg-1
+    constant bits(VL) result = ZAvector[vec, VL];
+    Z[d + r, VL] = result;
+    vec = vec + vstride;
+Operational information
+This instruction is a data-independent-time instruction as described in About PSTATE.DIT.
+
+
+MOVA (array to vector, two registers)
+Move two ZA single-vector groups to Z two-vector operand
+
+This instruction operates on two ZA single-vector groups.
+
+The single-vector group within each half of the ZA array is selected by the sum of the vector select register and offset, modulo half the number of ZA array vectors.
+
+The vector group symbol VGx2 indicates that the instruction operates on two ZA single-vector groups.
+
+The preferred disassembly syntax uses a 64-bit element size, but an assembler should accept any element size if it is used consistently for all operands. The vector group symbol is preferred for disassembly, but optional in assembler source code.
+
+This instruction is unpredicated.
+
+This instruction is used by the alias MOV (array to vector, two registers).
+
+SME2
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	0	0	0	0	0	0	0	0	1	1	0	0	Rv	0	1	0	0	0	off3	Zd	0
+Encoding
+MOVA { <Zd1>.D-<Zd2>.D }, ZA.D[<Wv>, <offs>{, VGx2}]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF);
+constant integer v = UInt('010':Rv);
+constant integer offset = UInt(off3);
+constant integer d = UInt(Zd:'0');
+constant integer nreg = 2;
+Assembler Symbols
+<Zd1>	
+Is the name of the first scalable vector register of the destination multi-vector group, encoded as "Zd" times 2.
+
+<Zd2>	
+Is the name of the second scalable vector register of the destination multi-vector group, encoded as "Zd" times 2 plus 1.
+
+<Wv>	
+Is the 32-bit name of the vector select register W8-W11, encoded in the "Rv" field.
+
+<offs>	
+Is the vector select offset, in the range 0 to 7, encoded in the "off3" field.
+
+Operation
+
+CheckStreamingSVEAndZAEnabled();
+constant integer VL = CurrentVL;
+constant integer vectors = VL DIV 8;
+constant integer vstride = vectors DIV nreg;
+constant bits(32) vbase = X[v, 32];
+integer vec = (UInt(vbase) + offset) MOD vstride;
+
+for r = 0 to nreg-1
+    constant bits(VL) result = ZAvector[vec, VL];
+    Z[d + r, VL] = result;
+    vec = vec + vstride;
+Operational information
+This instruction is a data-independent-time instruction as described in About PSTATE.DIT.
+
+
+MOVA (tile to vector, four registers)
+Move ZA four-slice operand to Z four-vector operand
+
+This instruction operates on a horizontal or vertical ZA four-slice operand within a ZA tile of the specified element size.
+
+The first slice of the four-slice operand is selected by rounding down the sum of the slice index register and the immediate offset to the nearest lower multiple of 4, modulo the number of slices in the tile.
+
+The immediate offset is a multiple of 4 in the range 0 to the number of elements in a 128-bit vector segment minus 4.
+
+This instruction is unpredicated.
+
+This instruction is used by the alias MOV (tile to vector, four registers).
+
+It has encodings from 4 classes: 8-bit , 16-bit , 32-bit and 64-bit
+
+8-bit
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	0	0	0	0	0	0	0	0	1	1	0	V	Rs	0	0	1	0	0	0	off2	Zd	0	0
+size												
+Encoding
+MOVA { <Zd1>.B-<Zd4>.B }, ZA0<HV>.B[<Ws>, <offs1>:<offs4>]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF);
+constant integer s = UInt('011':Rs);
+constant integer nreg = 4;
+constant integer esize = 8;
+constant integer d = UInt(Zd:'00');
+constant integer n = 0;
+constant integer offset = UInt(off2:'00');
+constant boolean vertical = V == '1';
+16-bit
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	0	0	0	0	1	0	0	0	1	1	0	V	Rs	0	0	1	0	0	0	ZAn	o1	Zd	0	0
+size													
+Encoding
+MOVA { <Zd1>.H-<Zd4>.H }, <ZAn><HV>.H[<Ws>, <offs1>:<offs4>]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF);
+constant integer s = UInt('011':Rs);
+constant integer nreg = 4;
+constant integer esize = 16;
+constant integer d = UInt(Zd:'00');
+constant integer n = UInt(ZAn);
+constant integer offset = UInt(o1:'00');
+constant boolean vertical = V == '1';
+32-bit
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	0	0	0	1	0	0	0	0	1	1	0	V	Rs	0	0	1	0	0	0	ZAn	Zd	0	0
+size												
+Encoding
+MOVA { <Zd1>.S-<Zd4>.S }, <ZAn><HV>.S[<Ws>, <offs1>:<offs4>]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF);
+constant integer s = UInt('011':Rs);
+constant integer nreg = 4;
+constant integer esize = 32;
+constant integer d = UInt(Zd:'00');
+constant integer n = UInt(ZAn);
+constant integer offset = 0;
+constant boolean vertical = V == '1';
+64-bit
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	0	0	0	1	1	0	0	0	1	1	0	V	Rs	0	0	1	0	0	ZAn	Zd	0	0
+size											
+Encoding
+MOVA { <Zd1>.D-<Zd4>.D }, <ZAn><HV>.D[<Ws>, <offs1>:<offs4>]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF);
+if MaxImplementedSVL() < 256 then EndOfDecode(Decode_UNDEF);
+constant integer s = UInt('011':Rs);
+constant integer nreg = 4;
+constant integer esize = 64;
+constant integer d = UInt(Zd:'00');
+constant integer n = UInt(ZAn);
+constant integer offset = 0;
+constant boolean vertical = V == '1';
+Assembler Symbols
+<Zd1>	
+Is the name of the first scalable vector register of the destination multi-vector group, encoded as "Zd" times 4.
+
+<Zd4>	
+Is the name of the fourth scalable vector register of the destination multi-vector group, encoded as "Zd" times 4 plus 3.
+
+<HV>	
+Is the horizontal or vertical slice indicator, encoded in V:
+
+V	<HV>
+0	H
+1	V
+<Ws>	
+Is the 32-bit name of the slice index register W12-W15, encoded in the "Rs" field.
+
+<offs1>	
+For the "8-bit" variant: is the first slice index offset, encoded as "off2" field times 4.
+
+For the "16-bit" variant: is the first slice index offset, encoded as "o1" field times 4.
+
+For the "32-bit" and "64-bit" variants: is the first slice index offset, with implicit value 0.
+
+<offs4>	
+For the "8-bit" variant: is the fourth slice index offset, encoded as "off2" field times 4 plus 3.
+
+For the "16-bit" variant: is the fourth slice index offset, encoded as "o1" field times 4 plus 3.
+
+For the "32-bit" and "64-bit" variants: is the fourth slice index offset, with implicit value 3.
+
+<ZAn>	
+For the "16-bit" variant: is the name of the ZA tile ZA0-ZA1 to be accessed, encoded in the "ZAn" field.
+
+For the "32-bit" variant: is the name of the ZA tile ZA0-ZA3 to be accessed, encoded in the "ZAn" field.
+
+For the "64-bit" variant: is the name of the ZA tile ZA0-ZA7 to be accessed, encoded in the "ZAn" field.
+
+Operation
+
+CheckStreamingSVEAndZAEnabled();
+constant integer VL = CurrentVL;
+if nreg == 4 && esize == 64 && VL < 256 then EndOfDecode(Decode_UNDEF);
+constant integer slices = VL DIV esize;
+constant bits(32) index = X[s, 32];
+constant integer slice = ((UInt(index) - (UInt(index) MOD nreg)) + offset) MOD slices;
+
+for r = 0 to nreg-1
+    constant bits(VL) result = ZAslice[n, esize, vertical, slice + r, VL];
+    Z[d + r, VL] = result;
+Operational information
+This instruction is a data-independent-time instruction as described in About PSTATE.DIT.
+
+
+MOVA (tile to vector, single)
+Move ZA tile slice to Z vector
+
+This instruction operates on individual horizontal or vertical slices within a named ZA tile of the specified element size. The slice number within the tile is selected by the sum of the slice index register and immediate offset, modulo the number of such elements in a vector. The immediate offset is in the range 0 to the number of elements in a 128-bit vector segment minus 1.
+
+Inactive elements in the destination vector remain unmodified.
+
+This instruction is used by the alias MOV (tile to vector, single).
+
+It has encodings from 5 classes: 8-bit , 16-bit , 32-bit , 64-bit and 128-bit
+
+8-bit
+(FEAT_SME)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	0	0	0	0	0	0	0	0	0	1	0	V	Rs	Pg	0	off4	Zd
+size				Q						
+Encoding
+MOVA <Zd>.B, <Pg>/M, ZA0<HV>.B[<Ws>, <offs>]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME) then EndOfDecode(Decode_UNDEF);
+constant integer g = UInt(Pg);
+constant integer s = UInt('011':Rs);
+constant integer n = 0;
+constant integer offset = UInt(off4);
+constant integer esize = 8;
+constant integer d = UInt(Zd);
+constant boolean vertical = V == '1';
+16-bit
+(FEAT_SME)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	0	0	0	0	1	0	0	0	0	1	0	V	Rs	Pg	0	ZAn	off3	Zd
+size				Q							
+Encoding
+LD1H (scalar plus immediate, strided registers)
+Contiguous load of halfwords to multiple strided vectors (immediate index)
+
+This instruction performs a contiguous load of unsigned halfwords to elements of two or four strided vector registers from the memory address generated by a 64-bit scalar base and immediate index that is multiplied by the vector's in-memory size, irrespective of predication, and added to the base address.
+
+Inactive elements will not cause a read from Device memory or signal a fault, and are set to zero in the destination vector.
+
+It has encodings from 2 classes: Two registers and Four registers
+
+Two registers
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	0	1	0	0	0	0	1	0	1	0	0	imm4	0	0	1	PNg	Rn	T	0	Zt
+msz				N	
+Encoding
+LD1H { <Zt1>.H, <Zt2>.H }, <PNg>/Z, [<Xn|SP>{, #<imm>, MUL VL}]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF); end;
+let n : integer = UInt(Rn);
+let g : integer = UInt('1'::PNg);
+let nreg : integer{} = 2;
+let tstride : integer = 8;
+let t : integer = UInt(T::'0'::Zt);
+let esize : integer{} = 16;
+let offset : integer = SInt(imm4);
+Four registers
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	0	1	0	0	0	0	1	0	1	0	0	imm4	1	0	1	PNg	Rn	T	0	0	Zt
+msz				N		
+Encoding
+LD1H { <Zt1>.H, <Zt2>.H, <Zt3>.H, <Zt4>.H }, <PNg>/Z, [<Xn|SP>{, #<imm>, MUL VL}]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF); end;
+let n : integer = UInt(Rn);
+let g : integer = UInt('1'::PNg);
+let nreg : integer{} = 4;
+let tstride : integer = 4;
+let t : integer = UInt(T::'00'::Zt);
+let esize : integer{} = 16;
+let offset : integer = SInt(imm4);
+Assembler Symbols
+<Zt1>	
+For the "Two registers" variant: is the name of the first scalable vector register Z0-Z7 or Z16-Z23 to be transferred, encoded as "T:'0':Zt".
+
+For the "Four registers" variant: is the name of the first scalable vector register Z0-Z3 or Z16-Z19 to be transferred, encoded as "T:'00':Zt".
+
+<Zt2>	
+For the "Two registers" variant: is the name of the second scalable vector register Z8-Z15 or Z24-Z31 to be transferred, encoded as "T:'1':Zt".
+
+For the "Four registers" variant: is the name of the second scalable vector register Z4-Z7 or Z20-Z23 to be transferred, encoded as "T:'01':Zt".
+
+<PNg>	
+Is the name of the governing scalable predicate register PN8-PN15, with predicate-as-counter encoding, encoded in the "PNg" field.
+
+<Xn|SP>	
+Is the 64-bit name of the general-purpose base register or stack pointer, encoded in the "Rn" field.
+
+<imm>	
+For the "Two registers" variant: is the optional signed immediate vector offset, a multiple of 2 in the range -16 to 14, defaulting to 0, encoded in the "imm4" field.
+
+For the "Four registers" variant: is the optional signed immediate vector offset, a multiple of 4 in the range -32 to 28, defaulting to 0, encoded in the "imm4" field.
+
+<Zt3>	
+Is the name of the third scalable vector register Z8-Z11 or Z24-Z27 to be transferred, encoded as "T:'10':Zt".
+
+<Zt4>	
+Is the name of the fourth scalable vector register Z12-Z15 or Z28-Z31 to be transferred, encoded as "T:'11':Zt".
+
+Operation
+
+CheckStreamingSVEEnabled();
+let VL : integer{} = CurrentVL();
+let PL : integer{} = VL DIV 8;
+let elements : integer = VL DIV esize;
+let mbytes : integer{} = esize DIV 8;
+var base : bits(64);
+var addr : bits(64);
+let pred : bits(PL) = P{}(g);
+let mask : bits(PL * nreg) = CounterToPredicate{}(pred[15:0]);
+var values : array [[4]] of bits(VL);
+let contiguous : boolean = TRUE;
+let nontemporal : boolean = FALSE;
+var transfer : integer = t;
+let tagchecked : boolean = n != 31;
+let accdesc : AccessDescriptor = CreateAccDescSVE(MemOp_LOAD, nontemporal, contiguous,
+                                                     tagchecked);
+
+if !AnyActiveElement{PL*nreg}(mask, esize) then
+    if n == 31 && ConstrainUnpredictableBool(Unpredictable_CHECKSPNONEACTIVE) then
+        CheckSPAlignment();
+    end;
+else
+    if n == 31 then CheckSPAlignment(); end;
+end;
+
+base = if n == 31 then SP{64}() else X{64}(n);
+addr = AddressAdd(base, offset * nreg * elements * mbytes, accdesc);
+
+for r = 0 to nreg-1 do
+    for e = 0 to elements-1 do
+        if ActivePredicateElement{PL*nreg}(mask, r * elements + e, esize) then
+            values[[r]][e*:esize] = Mem{esize}(addr, accdesc);
+        else
+            values[[r]][e*:esize] = Zeros{esize};
+        end;
+        addr = AddressIncrement(addr, mbytes, accdesc);
+    end;
+end;
+
+for r = 0 to nreg-1 do
+    Z{VL}(transfer) = values[[r]];
+    transfer = transfer + tstride;
+end;
+Operational information
+This instruction is a data-independent-time instruction as described in About PSTATE.DIT.
+
+LD1H (scalar plus scalar, strided registers)
+Contiguous load of halfwords to multiple strided vectors (scalar index)
+
+This instruction performs a contiguous load of unsigned halfwords to elements of two or four strided vector registers from the memory address generated by a 64-bit scalar base and scalar index that is added to the base address. After each element access the index value is incremented, but the index register is not updated.
+
+Inactive elements will not cause a read from Device memory or signal a fault, and are set to zero in the destination vector.
+
+It has encodings from 2 classes: Two registers and Four registers
+
+Two registers
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	0	1	0	0	0	0	1	0	0	0	Rm	0	0	1	PNg	Rn	T	0	Zt
+msz				N	
+Encoding
+LD1H { <Zt1>.H, <Zt2>.H }, <PNg>/Z, [<Xn|SP>, <Xm>, LSL #1]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF); end;
+let n : integer = UInt(Rn);
+let m : integer = UInt(Rm);
+let g : integer = UInt('1'::PNg);
+let nreg : integer{} = 2;
+let tstride : integer = 8;
+let t : integer = UInt(T::'0'::Zt);
+let esize : integer{} = 16;
+Four registers
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	0	1	0	0	0	0	1	0	0	0	Rm	1	0	1	PNg	Rn	T	0	0	Zt
+msz				N		
+Encoding
+LD1H { <Zt1>.H, <Zt2>.H, <Zt3>.H, <Zt4>.H }, <PNg>/Z, [<Xn|SP>, <Xm>, LSL #1]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF); end;
+let n : integer = UInt(Rn);
+let m : integer = UInt(Rm);
+let g : integer = UInt('1'::PNg);
+let nreg : integer{} = 4;
+let tstride : integer = 4;
+let t : integer = UInt(T::'00'::Zt);
+let esize : integer{} = 16;
+Assembler Symbols
+<Zt1>	
+For the "Two registers" variant: is the name of the first scalable vector register Z0-Z7 or Z16-Z23 to be transferred, encoded as "T:'0':Zt".
+
+For the "Four registers" variant: is the name of the first scalable vector register Z0-Z3 or Z16-Z19 to be transferred, encoded as "T:'00':Zt".
+
+<Zt2>	
+For the "Two registers" variant: is the name of the second scalable vector register Z8-Z15 or Z24-Z31 to be transferred, encoded as "T:'1':Zt".
+
+For the "Four registers" variant: is the name of the second scalable vector register Z4-Z7 or Z20-Z23 to be transferred, encoded as "T:'01':Zt".
+
+<PNg>	
+Is the name of the governing scalable predicate register PN8-PN15, with predicate-as-counter encoding, encoded in the "PNg" field.
+
+<Xn|SP>	
+Is the 64-bit name of the general-purpose base register or stack pointer, encoded in the "Rn" field.
+
+<Xm>	
+Is the 64-bit name of the general-purpose offset register, encoded in the "Rm" field.
+
+<Zt3>	
+Is the name of the third scalable vector register Z8-Z11 or Z24-Z27 to be transferred, encoded as "T:'10':Zt".
+
+<Zt4>	
+Is the name of the fourth scalable vector register Z12-Z15 or Z28-Z31 to be transferred, encoded as "T:'11':Zt".
+
+Operation
+
+CheckStreamingSVEEnabled();
+let VL : integer{} = CurrentVL();
+let PL : integer{} = VL DIV 8;
+let elements : integer = VL DIV esize;
+let mbytes : integer{} = esize DIV 8;
+var offset : bits(64);
+var base : bits(64);
+var addr : bits(64);
+let pred : bits(PL) = P{}(g);
+let mask : bits(PL * nreg) = CounterToPredicate{}(pred[15:0]);
+var values : array [[4]] of bits(VL);
+let contiguous : boolean = TRUE;
+let nontemporal : boolean = FALSE;
+var transfer : integer = t;
+let tagchecked : boolean = TRUE;
+let accdesc : AccessDescriptor = CreateAccDescSVE(MemOp_LOAD, nontemporal, contiguous,
+                                                     tagchecked);
+
+if !AnyActiveElement{PL*nreg}(mask, esize) then
+    if n == 31 && ConstrainUnpredictableBool(Unpredictable_CHECKSPNONEACTIVE) then
+        CheckSPAlignment();
+    end;
+else
+    if n == 31 then CheckSPAlignment(); end;
+end;
+
+base = if n == 31 then SP{64}() else X{64}(n);
+offset = X{64}(m);
+addr = AddressAdd(base, UInt(offset) * mbytes, accdesc);
+
+for r = 0 to nreg-1 do
+    for e = 0 to elements-1 do
+        if ActivePredicateElement{PL*nreg}(mask, r * elements + e, esize) then
+            values[[r]][e*:esize] = Mem{esize}(addr, accdesc);
+        else
+            values[[r]][e*:esize] = Zeros{esize};
+        end;
+        addr = AddressIncrement(addr, mbytes, accdesc);
+    end;
+end;
+
+for r = 0 to nreg-1 do
+    Z{VL}(transfer) = values[[r]];
+    transfer = transfer + tstride;
+end;
+Operational information
+This instruction is a data-independent-time instruction as described in About PSTATE.DIT.
+
+LD1H (scalar plus scalar, tile slice)
+Contiguous load of halfwords to 16-bit element ZA tile slice
+
+This instruction performs a contiguous load of halfwords to a 16-bit element ZA tile slice. The slice number within the tile is selected by the sum of the slice index register and immediate offset, modulo the number of 16-bit elements in a vector. The immediate offset is in the range 0 to 7. The memory address is generated by a 64-bit scalar base and an optional 64-bit scalar offset that is multiplied by 2 and added to the base address. Inactive elements will not cause a read from Device memory or signal a fault, and are set to zero in the destination vector.
+
+SME
+(FEAT_SME)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	1	0	0	0	0	0	0	1	0	Rm	V	Rs	Pg	Rn	0	ZAt	off3
+msz									
+Encoding
+LD1H { <ZAt><HV>.H[<Ws>, <offs>] }, <Pg>/Z, [<Xn|SP>{, <Xm>, LSL #1}]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME) then EndOfDecode(Decode_UNDEF); end;
+let n : integer = UInt(Rn);
+let m : integer = UInt(Rm);
+let g : integer = UInt('0'::Pg);
+let s : integer = UInt('011'::Rs);
+let t : integer = UInt(ZAt);
+let offset : integer = UInt(off3);
+let esize : integer{} = 16;
+let vertical : boolean = V == '1';
+Assembler Symbols
+<ZAt>	
+Is the name of the ZA tile ZA0-ZA1 to be accessed, encoded in the "ZAt" field.
+
+<HV>	
+Is the horizontal or vertical slice indicator, encoded in V:
+
+V	<HV>
+0	H
+1	V
+<Ws>	
+Is the 32-bit name of the slice index register W12-W15, encoded in the "Rs" field.
+
+<offs>	
+Is the slice index offset, in the range 0 to 7, encoded in the "off3" field.
+
+<Pg>	
+Is the name of the governing scalable predicate register P0-P7, encoded in the "Pg" field.
+
+<Xn|SP>	
+Is the 64-bit name of the general-purpose base register or stack pointer, encoded in the "Rn" field.
+
+<Xm>	
+Is the optional 64-bit name of the general-purpose offset register, defaulting to XZR, encoded in the "Rm" field.
+
+Operation
+
+CheckStreamingSVEAndZAEnabled();
+let VL : integer{} = CurrentVL();
+let PL : integer{} = VL DIV 8;
+let dim : integer = VL DIV esize;
+var base : bits(64);
+var addr : bits(64);
+let mask : bits(PL) = P{}(g);
+var moffs : bits(64) = X{}(m);
+let index : bits(32) = X{}(s);
+let slice : integer = (UInt(index) + offset) MOD dim;
+var result : bits(VL);
+let mbytes : integer{} = esize DIV 8;
+let contiguous : boolean = TRUE;
+let nontemporal : boolean = FALSE;
+let tagchecked : boolean = TRUE;
+let accdesc : AccessDescriptor = CreateAccDescSME(MemOp_LOAD, nontemporal, contiguous,
+                                                     tagchecked);
+
+if n == 31 then
+    if (AnyActiveElement{PL}(mask, esize) ||
+          ConstrainUnpredictableBool(Unpredictable_CHECKSPNONEACTIVE)) then
+        CheckSPAlignment();
+    end;
+    base = SP{64}();
+else
+    base = X{64}(n);
+end;
+
+for e = 0 to dim - 1 do
+    addr = AddressAdd(base, UInt(moffs) * mbytes, accdesc);
+    if ActivePredicateElement{PL}(mask, e, esize) then
+        result[e*:esize] = Mem{esize}(addr, accdesc);
+    else
+        result[e*:esize] = Zeros{esize};
+    end;
+    moffs = moffs + 1;
+end;
+
+ZAslice{VL}(t, esize, vertical, slice) = result;
+Operational information
+This instruction is a data-independent-time instruction as described in About PSTATE.DIT.
+
+ZIP (two registers)
+Interleave elements from two vectors
+
+This instruction places the two-way interleaved elements from the first and second source vectors in the corresponding elements of the two destination vectors.
+
+This instruction is unpredicated.
+
+It has encodings from 2 classes: 8-bit to 64-bit elements and 128-bit element
+
+8-bit to 64-bit elements
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	0	0	1	size	1	Zm	1	1	0	1	0	0	Zn	Zd	0
+op
+Encoding
+ZIP { <Zd1>.<T>-<Zd2>.<T> }, <Zn>.<T>, <Zm>.<T>
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF); end;
+let esize : integer{} = 8 << UInt(size);
+let n : integer = UInt(Zn);
+let m : integer = UInt(Zm);
+let d : integer = UInt(Zd::'0');
+128-bit element
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	0	0	1	0	0	1	Zm	1	1	0	1	0	1	Zn	Zd	0
+op
+Encoding
+ZIP { <Zd1>.Q-<Zd2>.Q }, <Zn>.Q, <Zm>.Q
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF); end;
+if MaxImplementedSVL() < 256 then EndOfDecode(Decode_UNDEF); end;
+let esize : integer{} = 128;
+let n : integer = UInt(Zn);
+let m : integer = UInt(Zm);
+let d : integer = UInt(Zd::'0');
+Assembler Symbols
+<Zd1>	
+Is the name of the first scalable vector register of the destination multi-vector group, encoded as "Zd" times 2.
+
+<T>	
+Is the size specifier, encoded in size:
+
+size	<T>
+00	B
+01	H
+10	S
+11	D
+<Zd2>	
+Is the name of the second scalable vector register of the destination multi-vector group, encoded as "Zd" times 2 plus 1.
+
+<Zn>	
+Is the name of the first source scalable vector register, encoded in the "Zn" field.
+
+<Zm>	
+Is the name of the second source scalable vector register, encoded in the "Zm" field.
+
+Operation
+
+CheckStreamingSVEEnabled();
+let VL : integer{} = CurrentVL();
+if VL < esize * 2 then EndOfDecode(Decode_UNDEF); end;
+let pairs : integer = VL DIV (esize * 2);
+let operand0 : bits(VL) = Z{}(n);
+let operand1 : bits(VL) = Z{}(m);
+var result : bits(VL);
+
+for r = 0 to 1 do
+    let base : integer = r * pairs;
+    for p = 0 to pairs-1 do
+        result[(2*p+0)*:esize] = operand0[(base+p)*:esize];
+        result[(2*p+1)*:esize] = operand1[(base+p)*:esize];
+    end;
+    Z{VL}(d+r) = result;
+end;
+Operational information
+This instruction is a data-independent-time instruction as described in About PSTATE.DIT.
+
+UZP (two registers)
+Concatenate elements from two vectors
+
+This instruction concatenates every second element from each of the first and second source vectors and places them in the corresponding elements of the two destination vectors.
+
+This instruction is unpredicated.
+
+It has encodings from 2 classes: 8-bit to 64-bit elements and 128-bit element
+
+8-bit to 64-bit elements
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	0	0	1	size	1	Zm	1	1	0	1	0	0	Zn	Zd	1
+op
+Encoding
+UZP { <Zd1>.<T>-<Zd2>.<T> }, <Zn>.<T>, <Zm>.<T>
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF); end;
+let esize : integer{} = 8 << UInt(size);
+let n : integer = UInt(Zn);
+let m : integer = UInt(Zm);
+let d : integer = UInt(Zd::'0');
+128-bit element
+(FEAT_SME2)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	0	0	1	0	0	1	Zm	1	1	0	1	0	1	Zn	Zd	1
+op
+Encoding
+UZP { <Zd1>.Q-<Zd2>.Q }, <Zn>.Q, <Zm>.Q
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SME2) then EndOfDecode(Decode_UNDEF); end;
+if MaxImplementedSVL() < 256 then EndOfDecode(Decode_UNDEF); end;
+let esize : integer{} = 128;
+let n : integer = UInt(Zn);
+let m : integer = UInt(Zm);
+let d : integer = UInt(Zd::'0');
+Assembler Symbols
+<Zd1>	
+Is the name of the first scalable vector register of the destination multi-vector group, encoded as "Zd" times 2.
+
+<T>	
+Is the size specifier, encoded in size:
+
+size	<T>
+00	B
+01	H
+10	S
+11	D
+<Zd2>	
+Is the name of the second scalable vector register of the destination multi-vector group, encoded as "Zd" times 2 plus 1.
+
+<Zn>	
+Is the name of the first source scalable vector register, encoded in the "Zn" field.
+
+<Zm>	
+Is the name of the second source scalable vector register, encoded in the "Zm" field.
+
+Operation
+
+CheckStreamingSVEEnabled();
+let VL : integer{} = CurrentVL();
+if VL < esize * 2 then EndOfDecode(Decode_UNDEF); end;
+let pairs : integer = VL DIV (esize * 2);
+var result0 : bits(VL);
+var result1 : bits(VL);
+
+for r = 0 to 1 do
+    let base : integer = r * pairs;
+    let operand : bits(VL) = if r == 0 then Z{VL}(n) else Z{VL}(m);
+    for p = 0 to pairs-1 do
+        result0[(base+p)*:esize] = operand[(2*p+0)*:esize];
+        result1[(base+p)*:esize] = operand[(2*p+1)*:esize];
+    end;
+end;
+
+Z{VL}(d+0) = result0;
+Z{VL}(d+1) = result1;
+Operational information
+This instruction is a data-independent-time instruction as described in About PSTATE.DIT.
+
+LD1H (scalar plus vector)
+Gather load unsigned halfwords to vector (vector index)
+
+This instruction performs a gather load of unsigned halfwords to Active elements of a vector register from memory addresses generated by a 64-bit scalar base plus vector index. The index values are optionally first sign-extended or zero-extended from 32 to 64 bits and then optionally multiplied by 2. Inactive elements will not cause a read from Device memory or signal faults, and are set to zero in the destination vector.
+
+This instruction is illegal when executed in Streaming SVE mode, unless FEAT_SME_FA64 is implemented and enabled.
+
+It has encodings from 6 classes: 32-bit scaled offset , 32-bit unpacked scaled offset , 32-bit unpacked unscaled offset , 32-bit unscaled offset , 64-bit scaled offset and 64-bit unscaled offset
+
+32-bit scaled offset
+(FEAT_SVE)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	0	0	0	0	1	0	0	1	xs	1	Zm	0	1	0	Pg	Rn	Zt
+U	ff			
+Encoding
+LD1H { <Zt>.S }, <Pg>/Z, [<Xn|SP>, <Zm>.S, <mod> #1]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SVE) then EndOfDecode(Decode_UNDEF); end;
+let t : integer = UInt(Zt);
+let n : integer = UInt(Rn);
+let m : integer = UInt(Zm);
+let g : integer = UInt(Pg);
+let esize : integer{} = 32;
+let msize : integer{} = 16;
+let offs_size : integer{} = 32;
+let unsigned : boolean = TRUE;
+let offs_unsigned : boolean = xs == '0';
+let scale : integer = 1;
+32-bit unpacked scaled offset
+(FEAT_SVE)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	1	0	0	1	xs	1	Zm	0	1	0	Pg	Rn	Zt
+opc					U	ff			
+Encoding
+LD1H { <Zt>.D }, <Pg>/Z, [<Xn|SP>, <Zm>.D, <mod> #1]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SVE) then EndOfDecode(Decode_UNDEF); end;
+let t : integer = UInt(Zt);
+let n : integer = UInt(Rn);
+let m : integer = UInt(Zm);
+let g : integer = UInt(Pg);
+let esize : integer{} = 64;
+let msize : integer{} = 16;
+let offs_size : integer{} = 32;
+let unsigned : boolean = TRUE;
+let offs_unsigned : boolean = xs == '0';
+let scale : integer = 1;
+32-bit unpacked unscaled offset
+(FEAT_SVE)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	1	0	0	1	xs	0	Zm	0	1	0	Pg	Rn	Zt
+msz					U	ff			
+Encoding
+LD1H { <Zt>.D }, <Pg>/Z, [<Xn|SP>, <Zm>.D, <mod>]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SVE) then EndOfDecode(Decode_UNDEF); end;
+let t : integer = UInt(Zt);
+let n : integer = UInt(Rn);
+let m : integer = UInt(Zm);
+let g : integer = UInt(Pg);
+let esize : integer{} = 64;
+let msize : integer{} = 16;
+let offs_size : integer{} = 32;
+let unsigned : boolean = TRUE;
+let offs_unsigned : boolean = xs == '0';
+let scale : integer = 0;
+32-bit unscaled offset
+(FEAT_SVE)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	0	0	0	0	1	0	0	1	xs	0	Zm	0	1	0	Pg	Rn	Zt
+opc					U	ff			
+Encoding
+LD1H { <Zt>.S }, <Pg>/Z, [<Xn|SP>, <Zm>.S, <mod>]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SVE) then EndOfDecode(Decode_UNDEF); end;
+let t : integer = UInt(Zt);
+let n : integer = UInt(Rn);
+let m : integer = UInt(Zm);
+let g : integer = UInt(Pg);
+let esize : integer{} = 32;
+let msize : integer{} = 16;
+let offs_size : integer{} = 32;
+let unsigned : boolean = TRUE;
+let offs_unsigned : boolean = xs == '0';
+let scale : integer = 0;
+64-bit scaled offset
+(FEAT_SVE)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	1	0	0	1	1	1	Zm	1	1	0	Pg	Rn	Zt
+opc				U	ff			
+Encoding
+LD1H { <Zt>.D }, <Pg>/Z, [<Xn|SP>, <Zm>.D, LSL #1]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SVE) then EndOfDecode(Decode_UNDEF); end;
+let t : integer = UInt(Zt);
+let n : integer = UInt(Rn);
+let m : integer = UInt(Zm);
+let g : integer = UInt(Pg);
+let esize : integer{} = 64;
+let msize : integer{} = 16;
+let offs_size : integer{} = 64;
+let unsigned : boolean = TRUE;
+let offs_unsigned : boolean = TRUE;
+let scale : integer = 1;
+64-bit unscaled offset
+(FEAT_SVE)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	1	0	0	1	1	0	Zm	1	1	0	Pg	Rn	Zt
+msz				U	ff			
+Encoding
+LD1H { <Zt>.D }, <Pg>/Z, [<Xn|SP>, <Zm>.D]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SVE) then EndOfDecode(Decode_UNDEF); end;
+let t : integer = UInt(Zt);
+let n : integer = UInt(Rn);
+let m : integer = UInt(Zm);
+let g : integer = UInt(Pg);
+let esize : integer{} = 64;
+let msize : integer{} = 16;
+let offs_size : integer{} = 64;
+let unsigned : boolean = TRUE;
+let offs_unsigned : boolean = TRUE;
+let scale : integer = 0;
+Assembler Symbols
+<Zt>	
+Is the name of the scalable vector register to be transferred, encoded in the "Zt" field.
+
+<Pg>	
+Is the name of the governing scalable predicate register P0-P7, encoded in the "Pg" field.
+
+<Xn|SP>	
+Is the 64-bit name of the general-purpose base register or stack pointer, encoded in the "Rn" field.
+
+<Zm>	
+Is the name of the offset scalable vector register, encoded in the "Zm" field.
+
+<mod>	
+Is the index extend and shift specifier, encoded in xs:
+
+xs	<mod>
+0	UXTW
+1	SXTW
+Operation
+
+CheckNonStreamingSVEEnabled();
+let VL : integer{} = CurrentVL();
+let PL : integer{} = VL DIV 8;
+let elements : integer = VL DIV esize;
+var base : bits(64);
+let mask : bits(PL) = P{}(g);
+var offset : bits(VL);
+var result : bits(VL);
+var data : bits(msize);
+let mbytes : integer{} = msize DIV 8;
+let contiguous : boolean = FALSE;
+let nontemporal : boolean = FALSE;
+let predicated : boolean = TRUE;
+let tagchecked : boolean = TRUE;
+let accdesc : AccessDescriptor = CreateAccDescSVE(MemOp_LOAD, nontemporal, contiguous,
+                                                     predicated, tagchecked);
+
+if !AnyActiveElement{PL}(mask, esize) then
+    if n == 31 && ConstrainUnpredictableBool(Unpredictable_CHECKSPNONEACTIVE) then
+        CheckSPAlignment();
+    end;
+else
+    if n == 31 then CheckSPAlignment(); end;
+    base = if n == 31 then SP{64}() else X{64}(n);
+    offset = Z{VL}(m);
+end;
+
+for e = 0 to elements-1 do
+    if ActivePredicateElement{PL}(mask, e, esize) then
+        let offselt : bits(offs_size) = offset[e*:esize][offs_size-1:0];
+        let off : integer = if offs_unsigned then UInt(offselt) else SInt(offselt);
+        let addr : bits(64) = AddressAdd(base, off << scale, accdesc);
+        data = Mem{msize}(addr, accdesc);
+        result[e*:esize] = Extend{esize}(data, unsigned);
+    else
+        result[e*:esize] = Zeros{esize};
+    end;
+end;
+
+Z{VL}(t) = result;
+Operational information
+This instruction is a data-independent-time instruction as described in About PSTATE.DIT.
+
+LD1H (vector plus immediate)
+Gather load unsigned halfwords to vector (immediate index)
+
+This instruction performs a gather load of unsigned halfwords to Active elements of a vector register from memory addresses generated by a vector base plus immediate index. The index is a multiple of 2 in the range 0 to 62. Inactive elements will not cause a read from Device memory or signal faults, and are set to zero in the destination vector.
+
+This instruction is illegal when executed in Streaming SVE mode, unless FEAT_SME_FA64 is implemented and enabled.
+
+It has encodings from 2 classes: 32-bit element and 64-bit element
+
+32-bit element
+(FEAT_SVE)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	0	0	0	0	1	0	0	1	0	1	imm5	1	1	0	Pg	Zn	Zt
+msz				U	ff			
+Encoding
+LD1H { <Zt>.S }, <Pg>/Z, [<Zn>.S{, #<imm>}]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SVE) then EndOfDecode(Decode_UNDEF); end;
+let t : integer = UInt(Zt);
+let n : integer = UInt(Zn);
+let g : integer = UInt(Pg);
+let esize : integer{} = 32;
+let msize : integer{} = 16;
+let unsigned : boolean = TRUE;
+let offset : integer = UInt(imm5);
+64-bit element
+(FEAT_SVE)
+31	30	29	28	27	26	25	24	23	22	21	20	19	18	17	16	15	14	13	12	11	10	9	8	7	6	5	4	3	2	1	0
+1	1	0	0	0	1	0	0	1	0	1	imm5	1	1	0	Pg	Zn	Zt
+msz				U	ff			
+Encoding
+LD1H { <Zt>.D }, <Pg>/Z, [<Zn>.D{, #<imm>}]
+
+Decode for this encoding
+
+if !IsFeatureImplemented(FEAT_SVE) then EndOfDecode(Decode_UNDEF); end;
+let t : integer = UInt(Zt);
+let n : integer = UInt(Zn);
+let g : integer = UInt(Pg);
+let esize : integer{} = 64;
+let msize : integer{} = 16;
+let unsigned : boolean = TRUE;
+let offset : integer = UInt(imm5);
+Assembler Symbols
+<Zt>	
+Is the name of the scalable vector register to be transferred, encoded in the "Zt" field.
+
+<Pg>	
+Is the name of the governing scalable predicate register P0-P7, encoded in the "Pg" field.
+
+<Zn>	
+Is the name of the base scalable vector register, encoded in the "Zn" field.
+
+<imm>	
+Is the optional unsigned immediate byte offset, a multiple of 2 in the range 0 to 62, defaulting to 0, encoded in the "imm5" field.
+
+Operation
+
+CheckNonStreamingSVEEnabled();
+let VL : integer{} = CurrentVL();
+let PL : integer{} = VL DIV 8;
+let elements : integer = VL DIV esize;
+let mask : bits(PL) = P{}(g);
+var base : bits(VL);
+var result : bits(VL);
+var data : bits(msize);
+let mbytes : integer{} = msize DIV 8;
+let contiguous : boolean = FALSE;
+let nontemporal : boolean = FALSE;
+let predicated : boolean = TRUE;
+let tagchecked : boolean = TRUE;
+let accdesc : AccessDescriptor = CreateAccDescSVE(MemOp_LOAD, nontemporal, contiguous,
+                                                     predicated, tagchecked);
+
+if AnyActiveElement{PL}(mask, esize) then
+    base = Z{VL}(n);
+end;
+
+for e = 0 to elements-1 do
+    if ActivePredicateElement{PL}(mask, e, esize) then
+        let baddr : bits(64) = ZeroExtend{}(base[e*:esize]);
+        let addr : bits(64) = AddressAdd(baddr, offset * mbytes, accdesc);
+        data = Mem{msize}(addr, accdesc);
+        result[e*:esize] = Extend{esize}(data, unsigned);
+    else
+        result[e*:esize] = Zeros{esize};
+    end;
+end;
+
+Z{VL}(t) = result;
+Operational information
+This instruction is a data-independent-time instruction as described in About PSTATE.DIT.
