@@ -1,1 +1,3 @@
 .trae
+__pycache__/
+*.py[cod]
