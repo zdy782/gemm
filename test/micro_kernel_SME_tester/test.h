@@ -7,12 +7,16 @@
 #include <arm_bf16.h>
 #endif
 
-#ifdef FP64
+#if defined(FP64)
 typedef double KML_FP;
-#elif FP32
+#elif defined(FP32)
 typedef float KML_FP;
-#else
+#elif defined(FP16)
 typedef __fp16 KML_FP;
+#elif defined(BF16)
+typedef __bf16 KML_FP;
+#else
+typedef float KML_FP;
 #endif
 
 #ifdef BF16
@@ -50,6 +54,7 @@ public:
   // - transA='T': A is K×M, access A[k + i*lda]
   // - transB='N': B is K×N, access B[k + j*ldb]
   // - transB='T': B is N×K, access B[j + k*ldb]
+  #if !defined(BF16) && !defined(FP16)
   static void gemm_ref(const KML_FP *A, const KML_FP *B, KML_FP *C, int M, int N, int K, int lda, int ldb, int ldc, bool ACC, char transA = 'N', char transB = 'N') {
     #pragma omp parallel for collapse(2)
     for (int j = 0; j < N; ++j) {
@@ -80,6 +85,7 @@ public:
       }
     }
   }
+  #endif
 
   #ifdef BF16
   static void gemm_ref(const __bf16 *A, const __bf16 *B, float *C, int M, int N, int K, int lda, int ldb, int ldc, bool ACC, char transA = 'N', char transB = 'N') {
@@ -166,6 +172,7 @@ public:
   }
 #endif
   
+  #if !defined(BF16) && !defined(FP16)
   static bool is_same_matrix(const KML_FP *C1, const KML_FP *C2, int M, int N, int ldc, float rtol, float atol) {
     for (int j = 0; j < N; ++j) {
       for (int i = 0; i < M; ++i) {
@@ -179,6 +186,7 @@ public:
     }
     return true;
   }
+  #endif
 
 #ifndef FP32
   static bool is_same_matrix(const float *C1, const float *C2, int M, int N, int ldc, float rtol, float atol) {
@@ -196,6 +204,7 @@ public:
   }
 #endif
 
+  #if !defined(BF16) && !defined(FP16)
   static int diff_index(const KML_FP *C1, const KML_FP *C2, int M, int N, int ldc, float rtol, float atol) {
     for (int j = 0; j < N; ++j) {
       for (int i = 0; i < M; ++i) {
@@ -209,6 +218,7 @@ public:
     }
     return -1;
   }
+  #endif
 
 #ifndef FP32
   static int diff_index(const float *C1, const float *C2, int M, int N, int ldc, float rtol, float atol) {
@@ -226,6 +236,7 @@ public:
   }
 #endif
 
+  #if !defined(BF16) && !defined(FP16)
   static int print_diff(const KML_FP *C1, const KML_FP *C2, int M, int N, int ldc) {
     printf("\n=== Diff Matrix (refC vs ourC) ===\n");
     for (int j = 0; j < N; ++j) {
@@ -240,6 +251,7 @@ public:
     }
     return -1;
   }
+  #endif
 
 #ifndef FP32
   static int print_diff(const float *C1, const float *C2, int M, int N, int ldc) {
@@ -258,7 +270,7 @@ public:
   }
 #endif
 
-  #ifndef FP16
+  #if !defined(BF16) && !defined(FP16)
   static void init(KML_FP *buf, int size, int start_value = 1) {
     #pragma omp parallel for
     for (int i = 0; i < size; ++i) {
@@ -292,7 +304,7 @@ public:
   }
 #endif
 
-  #ifndef FP16
+  #if !defined(BF16) && !defined(FP16)
   static void print_matrix(const KML_FP *matrix, int rows, int cols, int lda, const char* name) {
     printf("\n=== %s Matrix ===\n", name);
     for (int i = 0; i < rows; ++i) {
