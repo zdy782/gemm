@@ -258,12 +258,14 @@ public:
   }
 #endif
 
+  #ifndef FP16
   static void init(KML_FP *buf, int size, int start_value = 1) {
     #pragma omp parallel for
     for (int i = 0; i < size; ++i) {
         buf[i] = 1.0f * rand() / RAND_MAX;
     }
   }
+  #endif
 
   #ifdef BF16
   static void init(__bf16 *buf, int size, int start_value = 1) {
@@ -290,6 +292,7 @@ public:
   }
 #endif
 
+  #ifndef FP16
   static void print_matrix(const KML_FP *matrix, int rows, int cols, int lda, const char* name) {
     printf("\n=== %s Matrix ===\n", name);
     for (int i = 0; i < rows; ++i) {
@@ -300,6 +303,7 @@ public:
     }
     printf("\n");
   }
+  #endif
 
   #ifdef BF16
   static void print_matrix(const __bf16 *matrix, int rows, int cols, int lda, const char* name) {

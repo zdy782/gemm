@@ -126,10 +126,10 @@ def SAVE_REGS():
 
 def PROLOGUE(REALNAME):
     code_str = f""
-    code_str += f".text;\n"
-    code_str += f".p2align 2;\n"
-    code_str += f".global {REALNAME};\n"
-    code_str += f".type {REALNAME}, % function;\n"
+    code_str += f".text\n"
+    code_str += f".p2align 2\n"
+    code_str += f".global {REALNAME}\n"
+    code_str += f".type {REALNAME}, %function\n"
     code_str += f"{REALNAME}:\n"
     return code_str
 
