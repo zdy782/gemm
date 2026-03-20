@@ -14,7 +14,7 @@ class small_gemm_nn_def:
         # NN: A is N (not transposed) -> consecutive load
         # NN: B is N (not transposed) -> gather load with ldb stride
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"zip1      p4.h, {pga}.h, {pga}.h\n"
             code_str += f"ld1h      z26.h, {pga}/z, [{pA0}]\n"
             code_str += f"add       {TMP_PTR}, {pA0}, {LDA}, LSL #1\n"
@@ -49,7 +49,7 @@ class small_gemm_nn_def:
     def load_a1(a1, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p1':
                 dst = 'p4'
             else:
@@ -82,7 +82,7 @@ class small_gemm_nn_def:
     def load_a2(a2, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p1':
                 dst = 'p4'
             else:
@@ -115,7 +115,7 @@ class small_gemm_nn_def:
     def load_a3(a3, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p1':
                 dst = 'p4'
             else:
@@ -151,7 +151,7 @@ class small_gemm_nn_def:
         # nopackA nopackB
         code_str = f""
         code_str += f"add          {pBn}, {pB0}, {pB_OFFSET}\n"
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p0':
                 dst = 'p6'
             else:
@@ -183,7 +183,7 @@ class small_gemm_nn_def:
         # nopackA nopackB
         code_str = f""
         code_str += f"add          {pBn}, {pB0}, {pB_OFFSET}, lsl #1\n"
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p0':
                 dst = 'p6'
             else:
@@ -216,7 +216,7 @@ class small_gemm_nn_def:
         code_str = f""
         code_str += f"add          {pBn}, {pB0}, {pB_OFFSET}\n"
         code_str += f"add          {pBn}, {pBn}, {pB_OFFSET}, lsl #1\n"
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p0':
                 dst = 'p6'
             else:
@@ -297,7 +297,7 @@ class small_gemm_nt_def:
         # NT: A is N (not transposed) -> consecutive load
         # NT: B is T (transposed) -> consecutive load
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"zip1      p4.h, {pga}.h, {pga}.h\n"
             code_str += f"ld1h      z26.h, {pga}/z, [{pA0}]\n"
             code_str += f"add       {TMP_PTR}, {pA0}, {LDA}, LSL #1\n"
@@ -332,7 +332,7 @@ class small_gemm_nt_def:
     def load_a1(a1, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p1':
                 dst = 'p4'
             else:
@@ -365,7 +365,7 @@ class small_gemm_nt_def:
     def load_a2(a2, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p1':
                 dst = 'p4'
             else:
@@ -398,7 +398,7 @@ class small_gemm_nt_def:
     def load_a3(a3, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p1':
                 dst = 'p4'
             else:
@@ -433,7 +433,7 @@ class small_gemm_nt_def:
     def load_b1(b1, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p0':
                 dst = 'p6'
             else:
@@ -466,7 +466,7 @@ class small_gemm_nt_def:
     def load_b2(b2, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p0':
                 dst = 'p6'
             else:
@@ -499,7 +499,7 @@ class small_gemm_nt_def:
     def load_b3(b3, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p0':
                 dst = 'p6'
             else:
@@ -576,7 +576,7 @@ class small_gemm_tn_def:
         # TN: A is T (transposed) -> gather load with lda stride
         # TN: B is N (not transposed) -> gather load with ldb stride
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"mov       z26.b, #0\n"
             code_str += f"mov       z29.b, #0\n"
             code_str += f"zip1      p4.h, p1.h, p1.h\n"
@@ -617,7 +617,7 @@ class small_gemm_tn_def:
         # nopackA nopackB
         code_str = f""
         code_str += f"add          {pAn}, {pA0}, {pA_OFFSET}\n"
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p1':
                 dst = 'p6'
             else:
@@ -649,7 +649,7 @@ class small_gemm_tn_def:
         # nopackA nopackB
         code_str = f""
         code_str += f"add          {pAn}, {pA0}, {pA_OFFSET}, lsl #1\n"
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p1':
                 dst = 'p6'
             else:
@@ -682,7 +682,7 @@ class small_gemm_tn_def:
         code_str = f""
         code_str += f"add          {pAn}, {pA0}, {pA_OFFSET}\n"
         code_str += f"add          {pAn}, {pAn}, {pA_OFFSET}, lsl #1\n"
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p1':
                 dst = 'p6'
             else:
@@ -720,7 +720,7 @@ class small_gemm_tn_def:
         # nopackA nopackB
         code_str = f""
         code_str += f"add          {pBn}, {pB0}, {pB_OFFSET}\n"
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p0':
                 dst = 'p6'
             else:
@@ -752,7 +752,7 @@ class small_gemm_tn_def:
         # nopackA nopackB
         code_str = f""
         code_str += f"add          {pBn}, {pB0}, {pB_OFFSET}, lsl #1\n"
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p0':
                 dst = 'p6'
             else:
@@ -790,7 +790,7 @@ class small_gemm_tn_def:
         code_str = f""
         code_str += f"add          {pBn}, {pB0}, {pB_OFFSET}\n"
         code_str += f"add          {pBn}, {pBn}, {pB_OFFSET}, lsl #1\n"
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p0':
                 dst = 'p6'
             else:
@@ -881,7 +881,7 @@ class small_gemm_tt_def:
         # TT: A is T (transposed) -> gather load with lda stride
         # TT: B is T (transposed) -> consecutive load
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"zip1      p4.h, p1.h, p1.h\n"
             code_str += f"ld1h      z26.s, p4/z, [{pA0}, z28.s, UXTW]\n"
             code_str += f"add       {TMP_PTR}, {pA0}, #2\n"
@@ -918,7 +918,7 @@ class small_gemm_tt_def:
         # nopackA nopackB
         code_str = f""
         code_str += f"add          {pAn}, {pA0}, {pA_OFFSET}\n"
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p1':
                 dst = 'p4'
             else:
@@ -951,7 +951,7 @@ class small_gemm_tt_def:
         code_str = f""
         code_str += f"add          {pAn}, {pA0}, {pA_OFFSET}\n"
         code_str += f"add          {pAn}, {pAn}, {pA_OFFSET}\n"
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p1':
                 dst = 'p4'
             else:
@@ -986,7 +986,7 @@ class small_gemm_tt_def:
         code_str += f"add          {pAn}, {pA0}, {pA_OFFSET}\n"
         code_str += f"add          {pAn}, {pAn}, {pA_OFFSET}\n"
         code_str += f"add          {pAn}, {pAn}, {pA_OFFSET}\n"
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p1':
                 dst = 'p4'
             else:
@@ -1019,7 +1019,7 @@ class small_gemm_tt_def:
     def load_b1(b1, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p0':
                 dst = 'p6'
             else:
@@ -1052,7 +1052,7 @@ class small_gemm_tt_def:
     def load_b2(b2, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p0':
                 dst = 'p6'
             else:
@@ -1085,7 +1085,7 @@ class small_gemm_tt_def:
     def load_b3(b3, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             if pg == 'p0':
                 dst = 'p6'
             else:
@@ -1167,7 +1167,7 @@ class general_gemm_def:
     def load_a0b0(a0, pga, b0, pgb, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"ld1h      z26.h, {pga}, [{pA0}]\n"
             code_str += f"ld1h      z29.h, {pga}, [{pA0}, #1, MUL VL]\n"
             code_str += f"zip1      {a0}.h, z26.h, z29.h\n"
@@ -1182,7 +1182,7 @@ class general_gemm_def:
     def load_a1(a1, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"ld1h     z26.h, {pg}, [{pA0}, #2, MUL VL]\n"
             code_str += f"ld1h     z29.h, {pg}, [{pA0}, #3, MUL VL]\n"
             code_str += f"zip1     {a1}.h, z26.h, z29.h\n"
@@ -1193,7 +1193,7 @@ class general_gemm_def:
     def load_a2(a2, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"ld1h     z26.h, {pg}, [{pA0}, #4, MUL VL]\n"
             code_str += f"ld1h     z29.h, {pg}, [{pA0}, #5, MUL VL]\n"
             code_str += f"zip1     {a2}.h, z26.h, z29.h\n"
@@ -1204,7 +1204,7 @@ class general_gemm_def:
     def load_a3(a3, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"ld1h     z26.h, {pg}, [{pA0}, #6, MUL VL]\n"
             code_str += f"ld1h     z29.h, {pg}, [{pA0}, #7, MUL VL]\n"
             code_str += f"zip1     {a3}.h, z26.h, z29.h\n"
@@ -1215,7 +1215,7 @@ class general_gemm_def:
     def load_b1(b1, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"ld1h      z26.h, {pg}, [{pB0}, #2, MUL VL]\n"
             code_str += f"ld1h      z30.h, {pg}, [{pB0}, #3, MUL VL]\n"
             code_str += f"zip1      {b1}.h, z26.h, z30.h\n"
@@ -1226,7 +1226,7 @@ class general_gemm_def:
     def load_b2(b2, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"ld1h      z26.h, {pg}, [{pB0}, #4, MUL VL]\n"
             code_str += f"ld1h      z30.h, {pg}, [{pB0}, #5, MUL VL]\n"
             code_str += f"zip1      {b2}.h, z26.h, z30.h\n"
@@ -1237,7 +1237,7 @@ class general_gemm_def:
     def load_b3(b3, pg, ldopt=LD1, ldaopt=LD1):
         # nopackA nopackB
         code_str = f""
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"ld1h      z26.h, {pg}, [{pB0}, #6, MUL VL]\n"
             code_str += f"ld1h      z30.h, {pg}, [{pB0}, #7, MUL VL]\n"
             code_str += f"zip1      {b3}.h, z26.h, z30.h\n"

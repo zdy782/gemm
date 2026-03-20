@@ -10,11 +10,20 @@ def set_data_type(dtype):
 def get_data_type():
     return DATA_TYPE
 
+def is_fp32():
+    return DATA_TYPE == "fp32"
+
 def is_bf16():
     return DATA_TYPE == "bf16"
 
+def is_fp16():
+    return DATA_TYPE == "fp16"
+
+def is_ext_precision():
+    return DATA_TYPE in ("bf16", "fp16")
+
 def get_k_stride():
-    return 2 if is_bf16() else 1
+    return 2 if is_ext_precision() else 1
 
 # x寄存器分配
 # can't use x0-x7
@@ -66,28 +75,28 @@ LD1_H = "ld1h"
 LDNT1_H = "ldnt1h"
 
 def get_ld1():
-    return LD1_H if is_bf16() else LD1
+    return LD1_H if is_ext_precision() else LD1
 
 def get_element_suffix():
-    return ".h" if is_bf16() else ".s"
+    return ".h" if is_ext_precision() else ".s"
 
 def get_ld_element_suffix():
-    return ".h" if is_bf16() else ".s"
+    return ".h" if is_ext_precision() else ".s"
 
 def get_mopa_inst():
     return "bfmopa" if is_bf16() else "fmopa"
 
 def get_element_size_shift():
-    return 1 if is_bf16() else 2
+    return 1 if is_ext_precision() else 2
 
 def get_predicate_suffix():
-    return ".h" if is_bf16() else ".s"
+    return ".h" if is_ext_precision() else ".s"
 
 def get_whilelt_increment():
-    return 32 if is_bf16() else 16
+    return 32 if is_ext_precision() else 16
 
 def get_k_loop_shift():
-    return 4 if is_bf16() else 3
+    return 4 if is_ext_precision() else 3
 
 PASSING_REG_NUM = 6
 SIMD_REG_NUM = 32
@@ -95,6 +104,7 @@ SIMD_REG_NUM = 32
 # Tolerance values - fixed, not dependent on is_bf16()
 TOL = "1e-4"
 TOL_BF16 = "5e-3"
+TOL_FP16 = "1e-3"
 
 def SAVE_REGS():
     code_str = f""

@@ -61,3 +61,11 @@ M,N,K,lda,ldb,ldc,gemm_type,transA,transB,REPEAT,data_type
 256,256,256,256,256,256,small,T,T,4,fp32
 7,11,13,13,11,7,small,T,N,4,bf16
 19,23,29,29,23,19,small,N,T,4,fp32
+9,9,9,9,9,9,small,N,N,4,fp16
+9,9,9,9,9,9,small,N,T,4,fp16
+9,9,9,9,9,9,small,T,N,4,fp16
+9,9,9,9,9,9,small,T,T,4,fp16
+16,32,8,64,48,96,small,N,N,4,fp16
+13,29,7,16,29,32,small,N,T,4,fp16
+19,41,23,67,73,97,small,T,N,4,fp16
+31,3,127,127,127,131,small,T,T,4,fp16

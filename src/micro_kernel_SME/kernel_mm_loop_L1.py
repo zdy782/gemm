@@ -24,7 +24,7 @@ def kernel_mm_loop_n(M, N, K, n_size = 32, m_size = 32):
         code_str += f"cmp     {MIN_N}, #48\n"
         code_str += f"ble     .loops_of_l1_3vl\n"
         code_str += f"sub     {TMP_CNT}, {TMP_CNT}, {TMP_CNT}\n"
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"ptrue   p0.h, vl16\n"
         else:
             code_str += f"whilelt     p0.s, {TMP_CNT}, {MIN_N}\n"
@@ -41,7 +41,7 @@ def kernel_mm_loop_n(M, N, K, n_size = 32, m_size = 32):
         code_str += f"cmp     {MIN_N}, #32\n"
         code_str += f"ble     .loops_of_l1_2vl\n"
         code_str += f"sub     {TMP_CNT}, {TMP_CNT}, {TMP_CNT}\n"
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"ptrue   p0.h, vl16\n"
         else:
             code_str += f"whilelt     p0.s, {TMP_CNT}, {MIN_N}\n"
@@ -57,7 +57,7 @@ def kernel_mm_loop_n(M, N, K, n_size = 32, m_size = 32):
         code_str += f"cmp     {MIN_N}, #16\n"
         code_str += f"ble     .loops_of_l1_1vl\n"
         code_str += f"sub     {TMP_CNT}, {TMP_CNT}, {TMP_CNT}\n"
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"ptrue   p0.h, vl16\n"
         else:
             code_str += f"whilelt     p0.s, {TMP_CNT}, {MIN_N}\n"

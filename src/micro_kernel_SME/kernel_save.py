@@ -1,15 +1,14 @@
 from global_config import *
 from kernel_asm import *
-from gemm_type_impl import is_bf16
 
 def get_pg0():
-    if is_bf16():
+    if is_ext_precision():
         return "p4"
     else:
         return "p1"
 
 def get_pg1():
-    if is_bf16():
+    if is_ext_precision():
         return "p5"
     else:
         return "p2"

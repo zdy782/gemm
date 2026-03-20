@@ -25,7 +25,7 @@ kernel_fun_map_last_k = {
 }
 
 def set_load_inst(type):
-    if is_bf16():
+    if is_ext_precision():
         load_inst = LDNT1_H
         if type == "small":
             load_inst = LD1_H

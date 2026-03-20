@@ -3,7 +3,9 @@
 #include <cstdlib>
 #include <cmath>
 #include <arm_neon.h>
+#ifdef BF16
 #include <arm_bf16.h>
+#endif
 
 #ifdef FP64
 typedef double KML_FP;
@@ -13,6 +15,7 @@ typedef float KML_FP;
 typedef __fp16 KML_FP;
 #endif
 
+#ifdef BF16
 static inline float bf16_to_float(__bf16 val) {
     float result;
     uint16_t bits = *(uint16_t*)&val;
@@ -27,6 +30,11 @@ static inline __bf16 float_to_bf16(float val) {
     uint16_t bf16_bits = (uint16_t)(float_bits >> 16);
     result = *(__bf16*)&bf16_bits;
     return result;
+}
+#endif
+
+static inline __fp16 float_to_fp16(float val) {
+    return (__fp16)val;
 }
 
 class test_utils {
@@ -73,6 +81,7 @@ public:
     }
   }
 
+  #ifdef BF16
   static void gemm_ref(const __bf16 *A, const __bf16 *B, float *C, int M, int N, int K, int lda, int ldb, int ldc, bool ACC, char transA = 'N', char transB = 'N') {
     #pragma omp parallel for collapse(2)
     for (int j = 0; j < N; ++j) {
@@ -91,6 +100,31 @@ public:
             b_val = bf16_to_float(B[k + j * ldb]);
           } else {
             b_val = bf16_to_float(B[j + k * ldb]);
+          }
+          sum += a_val * b_val;
+        }
+        C[i + j * ldc] = sum;
+      }
+    }
+  }
+  #endif
+
+  static void gemm_ref(const __fp16 *A, const __fp16 *B, float *C, int M, int N, int K, int lda, int ldb, int ldc, bool ACC, char transA = 'N', char transB = 'N') {
+    #pragma omp parallel for collapse(2)
+    for (int j = 0; j < N; ++j) {
+      for (int i = 0; i < M; ++i) {
+        float sum = ACC ? C[i + j * ldc] : 0;
+        for (int k = 0; k < K; ++k) {
+          float a_val, b_val;
+          if (transA == 'N') {
+            a_val = A[i + k * lda];
+          } else {
+            a_val = A[k + i * lda];
+          }
+          if (transB == 'N') {
+            b_val = B[k + j * ldb];
+          } else {
+            b_val = B[j + k * ldb];
           }
           sum += a_val * b_val;
         }
@@ -231,10 +265,19 @@ public:
     }
   }
 
+  #ifdef BF16
   static void init(__bf16 *buf, int size, int start_value = 1) {
     #pragma omp parallel for
     for (int i = 0; i < size; ++i) {
         buf[i] = float_to_bf16(1.0f * rand() / RAND_MAX);
+    }
+  }
+  #endif
+
+  static void init(__fp16 *buf, int size, int start_value = 1) {
+    #pragma omp parallel for
+    for (int i = 0; i < size; ++i) {
+        buf[i] = float_to_fp16(1.0f * rand() / RAND_MAX);
     }
   }
 
@@ -258,11 +301,24 @@ public:
     printf("\n");
   }
 
+  #ifdef BF16
   static void print_matrix(const __bf16 *matrix, int rows, int cols, int lda, const char* name) {
     printf("\n=== %s Matrix ===\n", name);
     for (int i = 0; i < rows; ++i) {
       for (int j = 0; j < cols; ++j) {
         printf("%.6f ", bf16_to_float(matrix[i + j * lda]));
+      }
+      printf("\n");
+    }
+    printf("\n");
+  }
+  #endif
+
+  static void print_matrix(const __fp16 *matrix, int rows, int cols, int lda, const char* name) {
+    printf("\n=== %s Matrix ===\n", name);
+    for (int i = 0; i < rows; ++i) {
+      for (int j = 0; j < cols; ++j) {
+        printf("%.6f ", (float)matrix[i + j * lda]);
       }
       printf("\n");
     }

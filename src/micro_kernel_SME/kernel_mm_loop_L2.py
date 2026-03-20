@@ -31,7 +31,7 @@ def kernel_mm_loop_L2(m_size, label, nvl):
         code_str += f"ble      .loop_m_3vl_{nvl}_{label}\n"
         code_str += f"sub      {TMP_CNT}, {TMP_CNT}, {TMP_CNT}\n"
         code_str += f"whilelt  p1{pred_suffix}, {TMP_CNT}, {MIN_M}\n"
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"ptrue   p1.h, vl16\n"
         else:
             code_str += f"whilelt     p1.s, {TMP_CNT}, {MIN_M}\n"
@@ -48,7 +48,7 @@ def kernel_mm_loop_L2(m_size, label, nvl):
         code_str += f"cmp      {MIN_M}, #32\n"
         code_str += f"ble      .loop_m_2vl_{nvl}_{label}\n"
         code_str += f"sub      {TMP_CNT}, {TMP_CNT}, {TMP_CNT}\n"
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"ptrue   p1.h, vl16\n"
         else:
             code_str += f"whilelt     p1.s, {TMP_CNT}, {MIN_M}\n"
@@ -64,7 +64,7 @@ def kernel_mm_loop_L2(m_size, label, nvl):
         code_str += f"cmp      {MIN_M}, #16\n"
         code_str += f"ble      .loop_m_1vl_{nvl}_{label}\n"
         code_str += f"sub      {TMP_CNT}, {TMP_CNT}, {TMP_CNT}\n"
-        if is_bf16():
+        if is_ext_precision():
             code_str += f"ptrue   p1.h, vl16\n"
         else:
             code_str += f"whilelt     p1.s, {TMP_CNT}, {MIN_M}\n"

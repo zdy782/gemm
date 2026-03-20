@@ -1,3 +1,20 @@
 .trae
 __pycache__/
 *.py[cod]
+
+# Local-only configuration and scratch space
+*.local
+.env
+.env.*
+local/
+tmp/
+
+# Local virtualization and container artifacts
+*.qcow2
+*.img
+*.vmdk
+*.utm
+.docker/
+.colima/
+.lima/
+.orbstack/

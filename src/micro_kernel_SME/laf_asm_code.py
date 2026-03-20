@@ -32,7 +32,7 @@ def laf_asm_code(gemm_type, transA, transB, func_name, M, N, K, lda, ldb, ldc, d
     code_str += f"mov     {LDA}, #{lda}\n"
     code_str += f"mov     {LDB}, #{ldb}\n"
     code_str += f"mov     {LDC}, #{ldc}\n"
-    if is_bf16():
+    if is_ext_precision():
         code_str += f"ptrue   p0.h, all\n"
         code_str += f"pfalse  p7.b\n"
     else:
@@ -40,7 +40,7 @@ def laf_asm_code(gemm_type, transA, transB, func_name, M, N, K, lda, ldb, ldc, d
     code_str += gemm_config.currect_model.set_svindex()
     code_str += f"lsl     {LDC}, {LDC}, #2\n"
     
-    if is_bf16():
+    if is_ext_precision():
         code_str += f"mov     z29.s, #0\n"
         code_str += f"index   z29.s, #0, #2\n"
 

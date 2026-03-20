@@ -14,7 +14,7 @@ parser.add_argument("--gemm_type", type=str, default="small")
 parser.add_argument("--transA", type=str, default="N")
 parser.add_argument("--transB", type=str, default="N")
 parser.add_argument("--REPEAT", type=int, default=64)
-parser.add_argument("--data_type", type=str, default="fp32", choices=["fp32", "bf16"])
+parser.add_argument("--data_type", type=str, default="fp32", choices=["fp32", "bf16", "fp16"])
 
 args = parser.parse_args()
 

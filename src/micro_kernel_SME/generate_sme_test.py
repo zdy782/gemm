@@ -15,7 +15,7 @@ def generate_sme_asm(M: int, N: int, K: int, lda: int, ldb: int, ldc: int, gemm_
         transA (str): transA, "N" or "T"
         transB (str): transB, "N" or "T"
         uniq_id (str): a random 8 chars id to identify the kernel
-        data_type (str): data type, "fp32" or "bf16"
+        data_type (str): data type, "fp32", "bf16", or "fp16"
 
     Returns:
         asm_code (str): generated assembly code
@@ -45,7 +45,7 @@ def generate_sme_test_cpp(M: int, N: int, K: int, lda: int, ldb: int, ldc: int, 
         transB (str): transB, "N" or "T"
         uniq_id (str): a random 8 chars id to identify the kernel
         repeat (int): number of repetitions for performance test
-        data_type (str): data type, "fp32" or "bf16"
+        data_type (str): data type, "fp32", "bf16", or "fp16"
 
     Returns:
         cc_code (str): generated C++ test code
@@ -58,6 +58,12 @@ def generate_sme_test_cpp(M: int, N: int, K: int, lda: int, ldb: int, ldc: int, 
         input_type_include = "#include <arm_bf16.h>"
         guard_name = "__BGEMM_KERNEL_H"
         tol_val = TOL_BF16
+    elif is_fp16():
+        input_type = "__fp16"
+        output_type = "float"
+        input_type_include = ""
+        guard_name = "__HGEMM_KERNEL_H"
+        tol_val = TOL_FP16
     else:
         input_type = "float"
         output_type = "float"
