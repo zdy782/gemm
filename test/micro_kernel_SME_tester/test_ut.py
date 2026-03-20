@@ -45,15 +45,22 @@ def main():
             transB = tc.get("transB", "N")
             repeat = int(tc.get("REPEAT", 64))
             data_type = tc.get("data_type", "fp32")
+            m_vl = int(tc.get("m_vl", 1))
+            n_vl = int(tc.get("n_vl", 4))
 
             print(f"\n[{idx}/{total}] Running test case:")
             print(f"  M={M}, N={N}, K={K}, lda={lda}, ldb={ldb}, ldc={ldc}")
-            print(f"  gemm_type={gemm_type}, transA={transA}, transB={transB}, data_type={data_type}")
+            print(
+                f"  gemm_type={gemm_type}, transA={transA}, transB={transB}, "
+                f"data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}"
+            )
 
             ok = run_single_test(
                 M, N, K, lda, ldb, ldc,
                 gemm_type, transA, transB, repeat,
                 data_type=data_type,
+                m_vl=m_vl,
+                n_vl=n_vl,
                 verbose=True,
             )
 
@@ -70,6 +77,8 @@ def main():
                     "transA": transA,
                     "transB": transB,
                     "data_type": data_type,
+                    "m_vl": m_vl,
+                    "n_vl": n_vl,
                 })
                 print("  [RESULT] FAIL")
         except Exception as e:
@@ -98,7 +107,7 @@ def main():
                 print(f"  M={case['M']}, N={case['N']}, K={case['K']}")
                 print(f"  lda={case['lda']}, ldb={case['ldb']}, ldc={case['ldc']}")
                 print(f"  gemm_type={case['gemm_type']}, transA={case['transA']}, transB={case['transB']}")
-                print(f"  data_type={case['data_type']}")
+                print(f"  data_type={case['data_type']}, m_vl={case['m_vl']}, n_vl={case['n_vl']}")
         print("-" * 80)
 
 
