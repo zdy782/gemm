@@ -29,6 +29,8 @@ def run_single_test(
     transB,
     repeat,
     data_type="fp32",
+    m_vl=1,
+    n_vl=4,
     verbose=True,
     keep_tmp=False,
 ):
@@ -37,6 +39,9 @@ def run_single_test(
 
     from generate_sme_test import generate_sme_asm, generate_sme_test_cpp
     from generate_makefile import generate_makefile
+    from global_config import assert_valid_tile_combo
+
+    assert_valid_tile_combo(m_vl, n_vl)
 
     uniq_id = "".join(random.choices(string.ascii_uppercase, k=8))
     test_path = os.path.join(current_path, "tmp", uniq_id)
@@ -47,7 +52,7 @@ def run_single_test(
 
     try:
         asm_code = generate_sme_asm(
-            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, data_type
+            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, data_type, m_vl, n_vl
         )
         if not asm_code:
             if verbose:
@@ -58,7 +63,7 @@ def run_single_test(
             f.write(asm_code)
 
         cpp_code = generate_sme_test_cpp(
-            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, repeat, data_type
+            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, repeat, data_type, m_vl, n_vl
         )
         if not cpp_code:
             if verbose:

@@ -13,24 +13,6 @@ kernel_save_fun_map = {
     "kernel_save_c_1VL_1VL" : kernel_save_c_1VL_1VL,
 }
 
-def get_k_loop_shift():
-    if is_ext_precision():
-        return 4
-    else:
-        return 3
-
-def get_k_remainder_mask():
-    if is_ext_precision():
-        return 15
-    else:
-        return 7
-
-def get_k_step():
-    if is_ext_precision():
-        return 2
-    else:
-        return 1
-
 def kernel_mm_loop_k_LU(label, kernel, kernel_last_k, cnt, mvl, nvl):
     code_str = f""
     code_str += f".{label}_{mvl}_{nvl}_k:\n"

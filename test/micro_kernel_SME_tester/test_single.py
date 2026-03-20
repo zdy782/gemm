@@ -15,8 +15,13 @@ parser.add_argument("--transA", type=str, default="N")
 parser.add_argument("--transB", type=str, default="N")
 parser.add_argument("--REPEAT", type=int, default=64)
 parser.add_argument("--data_type", type=str, default="fp32", choices=["fp32", "bf16", "fp16"])
+parser.add_argument("--m_vl", type=int, default=1, choices=[1, 2, 3, 4])
+parser.add_argument("--n_vl", type=int, default=4, choices=[1, 2, 3, 4])
 
 args = parser.parse_args()
+
+if args.m_vl * args.n_vl > 4:
+    parser.error("Only tile combos with m_vl * n_vl <= 4 are supported")
 
 M = args.M
 N = args.N
@@ -34,6 +39,8 @@ success = run_single_test(
     transB=args.transB,
     repeat=args.REPEAT,
     data_type=args.data_type,
+    m_vl=args.m_vl,
+    n_vl=args.n_vl,
     verbose=True
 )
 

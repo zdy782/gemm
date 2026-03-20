@@ -18,52 +18,57 @@ def kernel_mm_loop_n(M, N, K, n_size = 32, m_size = 32):
 
     pred_suffix = get_predicate_suffix()
     increment = get_whilelt_increment()
+    vl1 = tile_size_from_vl(1)
+    vl2 = tile_size_from_vl(2)
+    vl3 = tile_size_from_vl(3)
+    vl4 = tile_size_from_vl(4)
+    ext_logical_vl = get_ext_logical_vl()
 
-    if n_size > 48:
+    if n_size > vl3:
         code_str += f".loops_of_l1_4vl:\n"
-        code_str += f"cmp     {MIN_N}, #48\n"
+        code_str += f"cmp     {MIN_N}, #{vl3}\n"
         code_str += f"ble     .loops_of_l1_3vl\n"
         code_str += f"sub     {TMP_CNT}, {TMP_CNT}, {TMP_CNT}\n"
         if is_ext_precision():
-            code_str += f"ptrue   p0.h, vl16\n"
+            code_str += f"ptrue   p0.h, vl{ext_logical_vl}\n"
         else:
             code_str += f"whilelt     p0.s, {TMP_CNT}, {MIN_N}\n"
-        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #16\n"
-        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #16\n"
-        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #16\n"
+        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
+        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
+        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
         code_str += f"whilelt     p3{pred_suffix}, {TMP_CNT}, {MIN_N}\n"
-        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #16\n"
+        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
 
         code_str += kernel_mm_loop_L2(m_size, "k_loop_m", "4VL")
     
-    if n_size > 32:
+    if n_size > vl2:
         code_str += f".loops_of_l1_3vl:\n"
-        code_str += f"cmp     {MIN_N}, #32\n"
+        code_str += f"cmp     {MIN_N}, #{vl2}\n"
         code_str += f"ble     .loops_of_l1_2vl\n"
         code_str += f"sub     {TMP_CNT}, {TMP_CNT}, {TMP_CNT}\n"
         if is_ext_precision():
-            code_str += f"ptrue   p0.h, vl16\n"
+            code_str += f"ptrue   p0.h, vl{ext_logical_vl}\n"
         else:
             code_str += f"whilelt     p0.s, {TMP_CNT}, {MIN_N}\n"
-        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #16\n"
-        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #16\n"
+        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
+        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
         code_str += f"whilelt     p3{pred_suffix}, {TMP_CNT}, {MIN_N}\n"
-        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #16\n"
+        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
 
         code_str += kernel_mm_loop_L2(m_size, "k_loop_m", "3VL")
 
-    if n_size > 16:
+    if n_size > vl1:
         code_str += f".loops_of_l1_2vl:\n"
-        code_str += f"cmp     {MIN_N}, #16\n"
+        code_str += f"cmp     {MIN_N}, #{vl1}\n"
         code_str += f"ble     .loops_of_l1_1vl\n"
         code_str += f"sub     {TMP_CNT}, {TMP_CNT}, {TMP_CNT}\n"
         if is_ext_precision():
-            code_str += f"ptrue   p0.h, vl16\n"
+            code_str += f"ptrue   p0.h, vl{ext_logical_vl}\n"
         else:
             code_str += f"whilelt     p0.s, {TMP_CNT}, {MIN_N}\n"
-        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #16\n"
+        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
         code_str += f"whilelt     p3{pred_suffix}, {TMP_CNT}, {MIN_N}\n"
-        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #16\n"
+        code_str += f"add     {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
 
         code_str += kernel_mm_loop_L2(m_size, "k_loop_m", "2VL")
 
@@ -82,30 +87,30 @@ def kernel_mm_loop_n(M, N, K, n_size = 32, m_size = 32):
 
 
     code_str += f".cond_of_loops_n:\n"
-    if n_size == 16:
+    if n_size == vl1:
         code_str += f"whilelt     p0.s, {counterJ}, {origN}\n"
-    elif n_size == 32:
+    elif n_size == vl2:
         code_str += f"whilelt     p0.h, {counterJ}, {origN}\n"
-    elif n_size == 48:
+    elif n_size == vl3:
         code_str += f"whilelt     p0.h, {counterJ}, {origN}\n"
         code_str += f"add         {TMP_CNT}, {counterJ}, #{increment}\n"
         code_str += f"whilelt     p3.s, {TMP_CNT}, {origN}\n"
-    elif n_size == 64:
+    elif n_size == vl4:
         code_str += f"whilelt     p0.b, {counterJ}, {origN}\n"
     code_str += f"sub     {MIN_N}, {MIN_N}, {MIN_N}\n"
-    if n_size == 16:
+    if n_size == vl1:
         code_str += f"cntp    {MIN_N}, p0, p0.s\n"
         code_str += f"b.first     .loops_of_n\n"
-    elif n_size == 32:
+    elif n_size == vl2:
         code_str += f"cntp    {MIN_N}, p0, p0.h\n"
         code_str += f"b.first     .loops_of_n\n"
-    elif n_size == 48:
+    elif n_size == vl3:
         code_str += f"cntp    {MIN_N}, p0, p0.b\n"
         code_str += f"cntp    {TMP_CNT}, p3, p3.b\n"
         code_str += f"add     {MIN_N}, {MIN_N}, {TMP_CNT}\n"
         code_str += f"cmp     {MIN_N}, #0\n"
         code_str += f"bgt      .loops_of_n\n"
-    elif n_size == 64:
+    elif n_size == vl4:
         code_str += f"cntp    {MIN_N}, p0, p0.b\n"
         code_str += f"b.first     .loops_of_n\n"
 

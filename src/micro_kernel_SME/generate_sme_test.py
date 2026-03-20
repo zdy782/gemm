@@ -1,7 +1,21 @@
 from laf_asm_code import laf_asm_code
 from global_config import *
 
-def generate_sme_asm(M: int, N: int, K: int, lda: int, ldb: int, ldc: int, gemm_type: str, transA: str, transB: str, uniq_id: str, data_type: str = "fp32"):
+def generate_sme_asm(
+    M: int,
+    N: int,
+    K: int,
+    lda: int,
+    ldb: int,
+    ldc: int,
+    gemm_type: str,
+    transA: str,
+    transB: str,
+    uniq_id: str,
+    data_type: str = "fp32",
+    m_vl: int = 1,
+    n_vl: int = 4,
+):
     """Generate .S assembly file for SME GEMM kernel
 
     Args:
@@ -16,21 +30,39 @@ def generate_sme_asm(M: int, N: int, K: int, lda: int, ldb: int, ldc: int, gemm_
         transB (str): transB, "N" or "T"
         uniq_id (str): a random 8 chars id to identify the kernel
         data_type (str): data type, "fp32", "bf16", or "fp16"
+        m_vl (int): M tile size in units of s-precision VL
+        n_vl (int): N tile size in units of s-precision VL
 
     Returns:
         asm_code (str): generated assembly code
     """
     func_name = f"gemm_{M}x{N}x{K}_{lda}_{ldb}_{ldc}_{uniq_id}"
     
-    kernel_code = laf_asm_code(gemm_type, transA, transB, func_name, M, N, K, lda, ldb, ldc, data_type)
+    assert_valid_tile_combo(m_vl, n_vl)
+    kernel_code = laf_asm_code(
+        gemm_type, transA, transB, func_name, M, N, K, lda, ldb, ldc, data_type, m_vl, n_vl
+    )
     
     if not kernel_code:
         return ""
     
     return kernel_code
-
-
-def generate_sme_test_cpp(M: int, N: int, K: int, lda: int, ldb: int, ldc: int, gemm_type: str, transA: str, transB: str, uniq_id: str, repeat: int, data_type: str = "fp32"):
+def generate_sme_test_cpp(
+    M: int,
+    N: int,
+    K: int,
+    lda: int,
+    ldb: int,
+    ldc: int,
+    gemm_type: str,
+    transA: str,
+    transB: str,
+    uniq_id: str,
+    repeat: int,
+    data_type: str = "fp32",
+    m_vl: int = 1,
+    n_vl: int = 4,
+):
     """Generate C++ test file for SME GEMM kernel
 
     Args:
@@ -46,11 +78,14 @@ def generate_sme_test_cpp(M: int, N: int, K: int, lda: int, ldb: int, ldc: int, 
         uniq_id (str): a random 8 chars id to identify the kernel
         repeat (int): number of repetitions for performance test
         data_type (str): data type, "fp32", "bf16", or "fp16"
+        m_vl (int): M tile size in units of s-precision VL
+        n_vl (int): N tile size in units of s-precision VL
 
     Returns:
         cc_code (str): generated C++ test code
     """
     set_data_type(data_type)
+    assert_valid_tile_combo(m_vl, n_vl)
     
     if is_bf16():
         input_type = "__bf16"
@@ -128,7 +163,7 @@ void* _mm_malloc(size_t align, size_t sz)
 
 int main()
 {{
-    printf("M={M}, N={N}, K={K}, lda={lda}, ldb={ldb}, ldc={ldc}, transA={transA}, transB={transB}, REPEAT={repeat}, data_type={data_type} ");
+    printf("M={M}, N={N}, K={K}, lda={lda}, ldb={ldb}, ldc={ldc}, transA={transA}, transB={transB}, REPEAT={repeat}, data_type={data_type}, m_vl={m_vl}, n_vl={n_vl} ");
     
     #define M {M}
     #define N {N}

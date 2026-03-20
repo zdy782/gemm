@@ -3,9 +3,24 @@ from gemm_type_impl import *
 from global_config import *
 from kernel_mm_loop_L1 import kernel_mm_loop_n
 
-def laf_asm_code(gemm_type, transA, transB, func_name, M, N, K, lda, ldb, ldc, data_type="fp32"):
+def laf_asm_code(
+    gemm_type,
+    transA,
+    transB,
+    func_name,
+    M,
+    N,
+    K,
+    lda,
+    ldb,
+    ldc,
+    data_type="fp32",
+    m_vl=1,
+    n_vl=4,
+):
     set_data_type(data_type)
     gemm_config.set_type_value(gemm_type, transA, transB)
+    assert_valid_tile_combo(m_vl, n_vl)
 
     if gemm_config.type == "small" and gemm_config.transa == "N" and gemm_config.transb == "N":
         logger.debug(f"{gemm_config.type}, {gemm_config.transa}, {gemm_config.transb}")
@@ -45,13 +60,9 @@ def laf_asm_code(gemm_type, transA, transB, func_name, M, N, K, lda, ldb, ldc, d
         code_str += f"index   z29.s, #0, #2\n"
 
 
-    # 控制M和N方向Kernel size的大小
-    m_size = 16
-    n_size = 64
-
-    if (n_size <= 0 or m_size <= 0) or (n_size not in [16, 32, 48, 64]) or (m_size not in [16, 32, 48, 64]) or (n_size * m_size > 1024):
-        logger.error(f"m_size:{m_size} * n_size:{n_size} error!")
-        exit(1)
+    # Tile sizes are expressed in units of s-precision VL.
+    m_size = tile_size_from_vl(m_vl)
+    n_size = tile_size_from_vl(n_vl)
 
     code_str += kernel_mm_loop_n(M, N, K, n_size, m_size)
 

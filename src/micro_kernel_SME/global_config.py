@@ -2,6 +2,9 @@ from loguru import logger
 import math
 
 DATA_TYPE = "fp32"
+S_ELEMENTS_PER_VL = 16
+H_ELEMENTS_PER_VL = 32
+MAX_TILE_AREA_VL = 4
 
 def set_data_type(dtype):
     global DATA_TYPE
@@ -9,6 +12,30 @@ def set_data_type(dtype):
 
 def get_data_type():
     return DATA_TYPE
+
+def get_s_elements_per_vl():
+    return S_ELEMENTS_PER_VL
+
+def get_h_elements_per_vl():
+    return H_ELEMENTS_PER_VL
+
+def get_ext_logical_vl():
+    return get_s_elements_per_vl()
+
+def tile_size_from_vl(mult):
+    return mult * get_s_elements_per_vl()
+
+def is_valid_tile_combo(m_vl, n_vl):
+    if m_vl not in (1, 2, 3, 4) or n_vl not in (1, 2, 3, 4):
+        return False
+    return (m_vl * n_vl) <= MAX_TILE_AREA_VL
+
+def assert_valid_tile_combo(m_vl, n_vl):
+    if not is_valid_tile_combo(m_vl, n_vl):
+        raise ValueError(
+            f"Unsupported tile combo m_vl={m_vl}, n_vl={n_vl}. "
+            "Only combinations with m_vl * n_vl <= 4 are supported."
+        )
 
 def is_fp32():
     return DATA_TYPE == "fp32"
@@ -24,6 +51,12 @@ def is_ext_precision():
 
 def get_k_stride():
     return 2 if is_ext_precision() else 1
+
+def get_k_step():
+    return 2 if is_ext_precision() else 1
+
+def get_k_remainder_mask():
+    return 15 if is_ext_precision() else 7
 
 # x寄存器分配
 # can't use x0-x7
@@ -93,7 +126,7 @@ def get_predicate_suffix():
     return ".h" if is_ext_precision() else ".s"
 
 def get_whilelt_increment():
-    return 32 if is_ext_precision() else 16
+    return get_h_elements_per_vl() if is_ext_precision() else get_s_elements_per_vl()
 
 def get_k_loop_shift():
     return 4 if is_ext_precision() else 3

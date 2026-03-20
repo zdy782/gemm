@@ -13,64 +13,69 @@ def kernel_mm_loop_L2(m_size, label, nvl):
 
     pred_suffix = get_predicate_suffix()
     increment = get_whilelt_increment()
+    vl1 = tile_size_from_vl(1)
+    vl2 = tile_size_from_vl(2)
+    vl3 = tile_size_from_vl(3)
+    vl4 = tile_size_from_vl(4)
+    ext_logical_vl = get_ext_logical_vl()
 
-    if m_size == 16:
+    if m_size == vl1:
         code_str += f"cntp     {MIN_M}, p1, p1.s\n"
-    elif m_size == 32:
+    elif m_size == vl2:
         code_str += f"cntp     {MIN_M}, p1, p1.h\n"
-    elif m_size == 48:
+    elif m_size == vl3:
         code_str += f"cntp     {MIN_M}, p1, p1.b\n"
-    elif m_size == 64:
+    elif m_size == vl4:
         code_str += f"cntp     {MIN_M}, p1, p1.b\n"
 
     code_str += gemm_config.currect_model.kernel_mm_loop_m_pre_func()
 
-    if m_size > 48:
+    if m_size > vl3:
         code_str += f".loop_m_4vl_{nvl}_{label}:\n"
-        code_str += f"cmp      {MIN_M}, #48\n"
+        code_str += f"cmp      {MIN_M}, #{vl3}\n"
         code_str += f"ble      .loop_m_3vl_{nvl}_{label}\n"
         code_str += f"sub      {TMP_CNT}, {TMP_CNT}, {TMP_CNT}\n"
         code_str += f"whilelt  p1{pred_suffix}, {TMP_CNT}, {MIN_M}\n"
         if is_ext_precision():
-            code_str += f"ptrue   p1.h, vl16\n"
+            code_str += f"ptrue   p1.h, vl{ext_logical_vl}\n"
         else:
             code_str += f"whilelt     p1.s, {TMP_CNT}, {MIN_M}\n"
-        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #16\n"
-        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #16\n"
-        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #16\n"
+        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
+        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
+        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
         code_str += f"whilelt  p2{pred_suffix}, {TMP_CNT}, {MIN_M}\n"
-        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #16\n"
+        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
 
         code_str += kernel_mm_loop_k(label, "4VL", nvl)
 
-    if m_size > 32:
+    if m_size > vl2:
         code_str += f".loop_m_3vl_{nvl}_{label}:\n"
-        code_str += f"cmp      {MIN_M}, #32\n"
+        code_str += f"cmp      {MIN_M}, #{vl2}\n"
         code_str += f"ble      .loop_m_2vl_{nvl}_{label}\n"
         code_str += f"sub      {TMP_CNT}, {TMP_CNT}, {TMP_CNT}\n"
         if is_ext_precision():
-            code_str += f"ptrue   p1.h, vl16\n"
+            code_str += f"ptrue   p1.h, vl{ext_logical_vl}\n"
         else:
             code_str += f"whilelt     p1.s, {TMP_CNT}, {MIN_M}\n"
-        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #16\n"
-        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #16\n"
+        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
+        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
         code_str += f"whilelt  p2{pred_suffix}, {TMP_CNT}, {MIN_M}\n"
-        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #16\n"
+        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
 
         code_str += kernel_mm_loop_k(label, "3VL", nvl)
 
-    if m_size > 16:
+    if m_size > vl1:
         code_str += f".loop_m_2vl_{nvl}_{label}:\n"
-        code_str += f"cmp      {MIN_M}, #16\n"
+        code_str += f"cmp      {MIN_M}, #{vl1}\n"
         code_str += f"ble      .loop_m_1vl_{nvl}_{label}\n"
         code_str += f"sub      {TMP_CNT}, {TMP_CNT}, {TMP_CNT}\n"
         if is_ext_precision():
-            code_str += f"ptrue   p1.h, vl16\n"
+            code_str += f"ptrue   p1.h, vl{ext_logical_vl}\n"
         else:
             code_str += f"whilelt     p1.s, {TMP_CNT}, {MIN_M}\n"
-        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #16\n"
+        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
         code_str += f"whilelt  p2{pred_suffix}, {TMP_CNT}, {MIN_M}\n"
-        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #16\n"
+        code_str += f"add      {TMP_CNT}, {TMP_CNT}, #{vl1}\n"
 
         code_str += kernel_mm_loop_k(label, "2VL", nvl)
 
@@ -86,19 +91,19 @@ def kernel_mm_loop_L2(m_size, label, nvl):
 
     code_str += gemm_config.currect_model.kernel_mm_loop_m_post_func()
     code_str += f".cond_of_loops_m_{nvl}_{label}:\n"
-    if (m_size == 16) and (nvl in ["1VL", "2VL", "3VL", "4VL"]):
+    if (m_size == vl1) and (nvl in ["1VL", "2VL", "3VL", "4VL"]):
         code_str += f"whilelt  p1.s, {counterI}, {origM}\n"
-    elif (m_size == 32 and (nvl in ["1VL", "2VL"])):
+    elif (m_size == vl2 and (nvl in ["1VL", "2VL"])):
         code_str += f"whilelt  p1.h, {counterI}, {origM}\n"
-    elif (m_size == 48) and (nvl == "1VL"):
+    elif (m_size == vl3) and (nvl == "1VL"):
         code_str += f"whilelt  p1.h, {counterI}, {origM}\n"
-        code_str += f"add      {TMP_CNT}, {counterI}, #32\n"
+        code_str += f"add      {TMP_CNT}, {counterI}, #{vl2}\n"
         code_str += f"whilelt  p2.s, {TMP_CNT}, {origM}\n"
         code_str += f"cntp     {MIN_M}, p1, p1.h\n"
         code_str += f"cntp     {TMP_CNT}, p2, p2.s\n"
         code_str += f"add      {TMP_CNT}, {MIN_M}, {TMP_CNT}\n"
         code_str += f"whilelt  p1.b, xzr, {TMP_CNT}\n"
-    elif (m_size == 64) and (nvl == "1VL"):
+    elif (m_size == vl4) and (nvl == "1VL"):
         code_str += f"whilelt  p1.b, {counterI}, {origM}\n"
     else:
         logger.error(f"m_size:{m_size} * n_size:{n_size} error!")
