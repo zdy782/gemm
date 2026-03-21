@@ -25,6 +25,22 @@ def get_ext_logical_vl():
 def tile_size_from_vl(mult):
     return mult * get_s_elements_per_vl()
 
+def get_save_subtile_count():
+    return 4
+
+def get_save_base_slice_stride():
+    return get_s_elements_per_vl() // get_save_subtile_count()
+
+def get_save_base_slice_indices():
+    stride = get_save_base_slice_stride()
+    return tuple(offset * stride for offset in range(get_save_subtile_count()))
+
+def get_save_tail_mask():
+    return get_s_elements_per_vl() - 1
+
+def get_save_vl_offsets():
+    return tuple(range(get_save_subtile_count()))
+
 def is_valid_tile_combo(m_vl, n_vl):
     if m_vl not in (1, 2, 3, 4) or n_vl not in (1, 2, 3, 4):
         return False

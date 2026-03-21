@@ -10,6 +10,11 @@ setup_environment()
 
 def main():
     testcases_path = os.path.join(current_path, "testcases_ut.csv")
+    required_columns = {
+        "M", "N", "K", "lda", "ldb", "ldc",
+        "gemm_type", "transA", "transB", "REPEAT",
+        "data_type", "m_vl", "n_vl",
+    }
 
     if not os.path.exists(testcases_path):
         print(f"[ERROR] Testcases file not found: {testcases_path}")
@@ -22,6 +27,11 @@ def main():
 
     with open(testcases_path, "r") as f:
         reader = csv.DictReader(f)
+        missing_columns = sorted(required_columns - set(reader.fieldnames or []))
+        if missing_columns:
+            raise ValueError(
+                f"CSV is missing required columns: {', '.join(missing_columns)}"
+            )
         testcases = list(reader)
 
     total = len(testcases)
@@ -40,13 +50,13 @@ def main():
             lda = int(tc.get("lda", M))
             ldb = int(tc.get("ldb", K))
             ldc = int(tc.get("ldc", M))
-            gemm_type = tc.get("gemm_type", "small")
-            transA = tc.get("transA", "N")
-            transB = tc.get("transB", "N")
-            repeat = int(tc.get("REPEAT", 64))
-            data_type = tc.get("data_type", "fp32")
-            m_vl = int(tc.get("m_vl", 1))
-            n_vl = int(tc.get("n_vl", 4))
+            gemm_type = tc["gemm_type"]
+            transA = tc["transA"]
+            transB = tc["transB"]
+            repeat = int(tc["REPEAT"])
+            data_type = tc["data_type"]
+            m_vl = int(tc["m_vl"])
+            n_vl = int(tc["n_vl"])
 
             print(f"\n[{idx}/{total}] Running test case:")
             print(f"  M={M}, N={N}, K={K}, lda={lda}, ldb={ldb}, ldc={ldc}")
