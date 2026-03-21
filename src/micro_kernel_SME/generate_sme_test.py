@@ -1,5 +1,8 @@
+from gemm_config import resolve_model
+from global_config import assert_valid_tile_combo, get_tolerance_value
 from laf_asm_code import laf_asm_code
-from global_config import *
+from model_spec import GenerationContext, KernelSpec
+from register_plan import DEFAULT_REGISTER_PLAN
 
 def generate_sme_asm(
     M: int,
@@ -37,11 +40,24 @@ def generate_sme_asm(
         asm_code (str): generated assembly code
     """
     func_name = f"gemm_{M}x{N}x{K}_{lda}_{ldb}_{ldc}_{uniq_id}"
-    
-    assert_valid_tile_combo(m_vl, n_vl)
-    kernel_code = laf_asm_code(
-        gemm_type, transA, transB, func_name, M, N, K, lda, ldb, ldc, data_type, m_vl, n_vl
+
+    spec = KernelSpec.from_args(
+        M,
+        N,
+        K,
+        lda,
+        ldb,
+        ldc,
+        gemm_type,
+        transA,
+        transB,
+        data_type,
+        m_vl,
+        n_vl,
     )
+    assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
+    ctx = GenerationContext(spec=spec, registers=DEFAULT_REGISTER_PLAN, model=resolve_model(spec))
+    kernel_code = laf_asm_code(ctx, func_name)
     
     if not kernel_code:
         return ""
@@ -84,27 +100,40 @@ def generate_sme_test_cpp(
     Returns:
         cc_code (str): generated C++ test code
     """
-    set_data_type(data_type)
-    assert_valid_tile_combo(m_vl, n_vl)
-    
-    if is_bf16():
+    spec = KernelSpec.from_args(
+        M,
+        N,
+        K,
+        lda,
+        ldb,
+        ldc,
+        gemm_type,
+        transA,
+        transB,
+        data_type,
+        m_vl,
+        n_vl,
+    )
+    assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
+
+    if spec.is_bf16():
         input_type = "__bf16"
         output_type = "float"
         input_type_include = "#include <arm_bf16.h>"
         guard_name = "__BGEMM_KERNEL_H"
-        tol_val = TOL_BF16
-    elif is_fp16():
+        tol_val = get_tolerance_value(spec)
+    elif spec.is_fp16():
         input_type = "__fp16"
         output_type = "float"
         input_type_include = ""
         guard_name = "__HGEMM_KERNEL_H"
-        tol_val = TOL_FP16
+        tol_val = get_tolerance_value(spec)
     else:
         input_type = "float"
         output_type = "float"
         input_type_include = ""
         guard_name = "__SGEMM_KERNEL_H"
-        tol_val = TOL
+        tol_val = get_tolerance_value(spec)
 
     # Column-major storage matrix sizes:
     # - A (transA='N'): M×K, needs K columns × lda = K * lda elements
@@ -112,8 +141,8 @@ def generate_sme_test_cpp(
     # - B (transB='N'): K×N, needs N columns × ldb = N * ldb elements
     # - B (transB='T'): N×K, needs K columns × ldb = K * ldb elements
     # - C: M×N, needs N columns × ldc = N * ldc elements
-    a_cols = K if transA == 'N' else M
-    b_cols = N if transB == 'N' else K
+    a_cols = K if spec.transA == 'N' else M
+    b_cols = N if spec.transB == 'N' else K
     
     a_size = a_cols * lda
     b_size = b_cols * ldb
@@ -171,8 +200,8 @@ int main()
     #define lda {lda}
     #define ldb {ldb}
     #define ldc {ldc}
-    const char transA = '{transA}';
-    const char transB = '{transB}';
+    const char transA = '{spec.transA}';
+    const char transB = '{spec.transB}';
 
     // Allocate matrices (column-major storage):
     // A: {a_cols} columns × lda = {a_size} elements

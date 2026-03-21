@@ -1,33 +1,43 @@
-from gemm_type_impl import *
+from dataclasses import dataclass
+from typing import Dict, Tuple
 
-type = "small"
-transa = "N"
-transb = "N"
-currect_model = None
+from gemm_type_impl import (
+    general_model,
+    small_nn_model,
+    small_nt_model,
+    small_tn_model,
+    small_tt_model,
+)
+from model_spec import GemmType, KernelSpec, Transpose
 
-load_inst = ""
 
-def set_type_value(gemm_type, transA, transB):
-    global type, transa, transb
-    type = gemm_type
-    transa = transA
-    transb = transB
+@dataclass(frozen=True)
+class ModelRegistry:
+    registry: Dict[Tuple[GemmType, Transpose, Transpose], object]
+    general_model: object
 
-def get_gemm_type_model():
-    global currect_model
-    if type == "small" and transa == "N" and transb == "N":
-        currect_model = small_gemm_nn_def
-    elif type == "small" and transa == "N" and transb == "T":
-        currect_model = small_gemm_nt_def
-    elif type == "small" and transa == "T" and transb == "N":
-        currect_model = small_gemm_tn_def
-    elif type == "small" and transa == "T" and transb == "T":
-        currect_model = small_gemm_tt_def
-    elif type == "general":
-        currect_model = general_gemm_def
-    else:
-        raise ValueError(
-            f"Unsupported GEMM config: type={type}, transA={transa}, transB={transb}"
-        )
+    def resolve(self, spec: KernelSpec):
+        if spec.gemm_type is GemmType.GENERAL:
+            return self.general_model
+        key = (spec.gemm_type, spec.trans_a, spec.trans_b)
+        if key not in self.registry:
+            raise ValueError(
+                f"Unsupported GEMM config: type={spec.gemm_type.value}, "
+                f"transA={spec.transA}, transB={spec.transB}"
+            )
+        return self.registry[key]
 
-    return currect_model
+
+DEFAULT_MODEL_REGISTRY = ModelRegistry(
+    registry={
+        (GemmType.SMALL, Transpose.NORMAL, Transpose.NORMAL): small_nn_model,
+        (GemmType.SMALL, Transpose.NORMAL, Transpose.TRANSPOSED): small_nt_model,
+        (GemmType.SMALL, Transpose.TRANSPOSED, Transpose.NORMAL): small_tn_model,
+        (GemmType.SMALL, Transpose.TRANSPOSED, Transpose.TRANSPOSED): small_tt_model,
+    },
+    general_model=general_model,
+)
+
+
+def resolve_model(spec: KernelSpec):
+    return DEFAULT_MODEL_REGISTRY.resolve(spec)
