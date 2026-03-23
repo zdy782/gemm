@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from global_config import get_element_size_shift, get_ld_element_suffix
+from model_spec import GemmType
 
 
 LOAD_CONTIGUOUS = "contiguous"
@@ -24,6 +25,10 @@ def _zip_ext_predicate(ctx, role):
     pred = _pred(ctx, role)
     ext_pred = _ext_pred(ctx, role)
     return f"zip1      {ext_pred}.h, {pred}.h, {pred}.h\n"
+
+
+def _use_experimental_ext_load(ctx):
+    return ctx.is_ext_precision() and ctx.is_experimental_ext_load() and ctx.spec.gemm_type is GemmType.SMALL
 
 
 def _rdvl_lane_offset(registers, lane):
@@ -85,6 +90,48 @@ def _emit_ext_contiguous_last_k(ctx, base, role, dst, lane, low_tmp, zero_tmp):
     return code_str
 
 
+def _emit_ext_contiguous_head_experimental(ctx, base, stride, tmp_base, role, dst, low_tmp, high_tmp):
+    pred = _ext_pred(ctx, role)
+    code_str = _zip_ext_predicate(ctx, role)
+    code_str += f"add       {tmp_base}, {base}, {stride}, LSL #1\n"
+    code_str += f"ld1h      {low_tmp}.h, {pred}/z, [{base}]\n"
+    code_str += f"ld1h      {high_tmp}.h, {pred}/z, [{tmp_base}]\n"
+    code_str += f"zip1      {dst}.h, {low_tmp}.h, {high_tmp}.h\n"
+    return code_str
+
+
+def _emit_ext_contiguous_lane_experimental(ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp):
+    if role.endswith("tail"):
+        return _emit_ext_contiguous_lane(ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp)
+
+    pred = _ext_pred(ctx, role)
+    code_str = _zip_ext_predicate(ctx, role)
+
+    if lane == 1:
+        code_str += f"zip2      {dst}.h, {low_tmp}.h, {high_tmp}.h\n"
+        return code_str
+
+    if lane in (1, 0):
+        load_base = base
+        load_pair = paired_base
+    else:
+        load_base = f"{base}, #1, MUL VL"
+        load_pair = f"{paired_base}, #1, MUL VL"
+
+    code_str += f"ld1h      {low_tmp}.h, {pred}/z, [{load_base}]\n"
+    code_str += f"ld1h      {high_tmp}.h, {pred}/z, [{load_pair}]\n"
+
+    if lane in (1, 3):
+        code_str += f"zip2      {dst}.h, {low_tmp}.h, {high_tmp}.h\n"
+    else:
+        code_str += f"zip1      {dst}.h, {low_tmp}.h, {high_tmp}.h\n"
+    return code_str
+
+
+def _emit_ext_contiguous_last_k_experimental(ctx, base, role, dst, lane, low_tmp, zero_tmp):
+    return _emit_ext_contiguous_last_k(ctx, base, role, dst, lane, low_tmp, zero_tmp)
+
+
 def _emit_non_ext_contiguous(load_inst, ctx, base, role, dst, lane):
     suffix = get_ld_element_suffix(ctx)
     pred = _load_predicate(ctx, role)
@@ -122,6 +169,17 @@ def _emit_a_head(ctx, config, a0, role, ldaopt):
     regs = ctx.registers
     if config.a_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
+            if _use_experimental_ext_load(ctx):
+                return _emit_ext_contiguous_head_experimental(
+                    ctx,
+                    regs.pointers.pA0,
+                    regs.params.LDA,
+                    regs.address.TMP_PTR,
+                    role,
+                    a0,
+                    regs.vectors.a_low,
+                    regs.vectors.pair_high,
+                )
             return _emit_ext_contiguous_head(
                 ctx,
                 regs.pointers.pA0,
@@ -151,6 +209,17 @@ def _emit_b_head(ctx, config, b0, role, ldopt):
     regs = ctx.registers
     if config.b_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
+            if _use_experimental_ext_load(ctx):
+                return _emit_ext_contiguous_head_experimental(
+                    ctx,
+                    regs.pointers.pB0,
+                    regs.params.LDB,
+                    regs.address.TMP_PTR1,
+                    role,
+                    b0,
+                    config.b_low_tmp,
+                    config.b_high_tmp,
+                )
             return _emit_ext_contiguous_head(
                 ctx,
                 regs.pointers.pB0,
@@ -193,6 +262,16 @@ def _gather_base_register(registers, lane, is_a):
 def _emit_a_last_k(ctx, config, a_reg, role, lane):
     regs = ctx.registers
     if config.a_mode == LOAD_CONTIGUOUS:
+        if _use_experimental_ext_load(ctx):
+            return _emit_ext_contiguous_last_k_experimental(
+                ctx,
+                regs.pointers.pA0,
+                role,
+                a_reg,
+                lane,
+                regs.vectors.a_low,
+                regs.vectors.pair_high,
+            )
         return _emit_ext_contiguous_last_k(
             ctx,
             regs.pointers.pA0,
@@ -210,6 +289,16 @@ def _emit_a_last_k(ctx, config, a_reg, role, lane):
 def _emit_b_last_k(ctx, config, b_reg, role, lane):
     regs = ctx.registers
     if config.b_mode == LOAD_CONTIGUOUS:
+        if _use_experimental_ext_load(ctx):
+            return _emit_ext_contiguous_last_k_experimental(
+                ctx,
+                regs.pointers.pB0,
+                role,
+                b_reg,
+                lane,
+                config.b_low_tmp,
+                config.b_high_tmp,
+            )
         return _emit_ext_contiguous_last_k(
             ctx,
             regs.pointers.pB0,
@@ -232,6 +321,17 @@ def _emit_a_lane(ctx, config, dst, role, lane, ldaopt):
     regs = ctx.registers
     if config.a_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
+            if _use_experimental_ext_load(ctx):
+                return _emit_ext_contiguous_lane_experimental(
+                    ctx,
+                    regs.pointers.pA0,
+                    regs.address.TMP_PTR,
+                    role,
+                    dst,
+                    lane,
+                    regs.vectors.a_low,
+                    regs.vectors.pair_high,
+                )
             return _emit_ext_contiguous_lane(
                 ctx,
                 regs.pointers.pA0,
@@ -265,6 +365,17 @@ def _emit_b_lane(ctx, config, dst, role, lane, ldopt):
     regs = ctx.registers
     if config.b_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
+            if _use_experimental_ext_load(ctx):
+                return _emit_ext_contiguous_lane_experimental(
+                    ctx,
+                    regs.pointers.pB0,
+                    regs.address.TMP_PTR1,
+                    role,
+                    dst,
+                    lane,
+                    config.b_low_tmp,
+                    config.b_high_tmp,
+                )
             return _emit_ext_contiguous_lane(
                 ctx,
                 regs.pointers.pB0,

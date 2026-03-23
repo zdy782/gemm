@@ -31,6 +31,7 @@ def run_single_test(
     data_type="fp32",
     m_vl=1,
     n_vl=4,
+    ext_load_strategy="legacy_half_vl",
     verbose=True,
     keep_tmp=False,
 ):
@@ -52,7 +53,20 @@ def run_single_test(
 
     try:
         asm_code = generate_sme_asm(
-            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, data_type, m_vl, n_vl
+            M,
+            N,
+            K,
+            lda,
+            ldb,
+            ldc,
+            gemm_type,
+            transA,
+            transB,
+            uniq_id,
+            data_type,
+            m_vl,
+            n_vl,
+            ext_load_strategy,
         )
         if not asm_code:
             if verbose:
@@ -63,7 +77,21 @@ def run_single_test(
             f.write(asm_code)
 
         cpp_code = generate_sme_test_cpp(
-            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, repeat, data_type, m_vl, n_vl
+            M,
+            N,
+            K,
+            lda,
+            ldb,
+            ldc,
+            gemm_type,
+            transA,
+            transB,
+            uniq_id,
+            repeat,
+            data_type,
+            m_vl,
+            n_vl,
+            ext_load_strategy,
         )
         if not cpp_code:
             if verbose:
