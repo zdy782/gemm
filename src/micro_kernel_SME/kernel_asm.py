@@ -181,7 +181,7 @@ KERNEL_LAST_K_PLANS = {
     "1VL_1VL": KERNEL_PLANS["1VL_1VL"][:2],
 }
 
-EXPERIMENTAL_KERNEL_PLANS = {
+FAST_EXT_KERNEL_PLANS = {
     "4VL_1VL": [
         {"kind": "load_ab", "a": 0, "a_role": "m_main", "next_a": 1, "next_a_role": "m_main", "b": 0, "b_role": "n_main"},
         {"kind": "mopa", "za": 0, "a": 0, "b": 0, "m_role": "m_main", "n_role": "n_main"},
@@ -255,23 +255,62 @@ EXPERIMENTAL_KERNEL_PLANS = {
     ],
 }
 
-EXPERIMENTAL_LAST_K_PLANS = EXPERIMENTAL_KERNEL_PLANS
+FAST_EXT_LAST_K_PLANS = FAST_EXT_KERNEL_PLANS
 
 
-def _experimental_plan(ctx, key, last_k):
+_SMALL_FAST_PLAN_KEYS = {
+    "small_nt": {"4VL_1VL", "1VL_4VL", "3VL_1VL", "1VL_3VL", "2VL_2VL", "1VL_2VL", "2VL_1VL"},
+    "small_nn": {"4VL_1VL", "3VL_1VL", "2VL_2VL", "2VL_1VL"},
+    # TT only keeps the widest B-side fast chunk; 1VL_2VL still regresses
+    # into the mixed/tail path in M-remainder loops and is not a net win.
+    "small_tt": {"1VL_3VL"},
+    "small_tn": set(),
+}
+
+_MODEL_FAST_PLAN_OVERRIDES = {
+    "small_nn": {
+        "2VL_2VL": [
+            {"kind": "load_ab", "a": 0, "a_role": "m_main", "next_a": 1, "next_a_role": "m_tail", "b": 0, "b_role": "n_main"},
+            {"kind": "mopa", "za": 0, "a": 0, "b": 0, "m_role": "m_main", "n_role": "n_main"},
+            {"kind": "b", "idx": 1, "role": "n_tail"},
+            {"kind": "mopa", "za": 1, "a": 0, "b": 1, "m_role": "m_main", "n_role": "n_tail"},
+            {"kind": "mopa", "za": 2, "a": 1, "b": 0, "m_role": "m_tail", "n_role": "n_main"},
+            {"kind": "update", "ptr": "A"},
+            {"kind": "mopa", "za": 3, "a": 1, "b": 1, "m_role": "m_tail", "n_role": "n_tail"},
+            {"kind": "update", "ptr": "B"},
+        ],
+    },
+    "small_tt": {},
+}
+
+
+def _model_name(ctx):
+    config = getattr(ctx.model, "config", None)
+    return getattr(config, "name", None)
+
+
+def _fast_ext_plan(ctx, key, last_k):
     if key == "1VL_1VL":
         return None
-    table = EXPERIMENTAL_LAST_K_PLANS if last_k else EXPERIMENTAL_KERNEL_PLANS
+    model_name = _model_name(ctx)
+    if model_name not in _SMALL_FAST_PLAN_KEYS:
+        return None
+    if key not in _SMALL_FAST_PLAN_KEYS[model_name]:
+        return None
+    overrides = _MODEL_FAST_PLAN_OVERRIDES.get(model_name, {})
+    if key in overrides:
+        return overrides[key]
+    table = FAST_EXT_LAST_K_PLANS if last_k else FAST_EXT_KERNEL_PLANS
     if key in table:
         return table[key]
     return None
 
 
 def _active_plan(ctx, key, last_k):
-    if ctx.is_ext_precision() and ctx.is_experimental_ext_load():
-        experimental_plan = _experimental_plan(ctx, key, last_k)
-        if experimental_plan is not None:
-            return experimental_plan
+    if ctx.is_ext_precision() and ctx.use_ext_paired_fast_path():
+        fast_plan = _fast_ext_plan(ctx, key, last_k)
+        if fast_plan is not None:
+            return fast_plan
     return KERNEL_LAST_K_PLANS[key] if last_k else KERNEL_PLANS[key]
 
 

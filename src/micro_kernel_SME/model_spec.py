@@ -14,11 +14,6 @@ class GemmType(str, Enum):
     GENERAL = "general"
 
 
-class ExtLoadStrategy(str, Enum):
-    LEGACY_HALF_VL = "legacy_half_vl"
-    EXPERIMENTAL = "experimental"
-
-
 class Transpose(str, Enum):
     NORMAL = "N"
     TRANSPOSED = "T"
@@ -43,7 +38,6 @@ class KernelSpec:
     trans_b: Transpose
     precision: Precision
     tile: TileShape
-    ext_load_strategy: ExtLoadStrategy = ExtLoadStrategy.LEGACY_HALF_VL
 
     @classmethod
     def from_args(
@@ -60,7 +54,6 @@ class KernelSpec:
         data_type: str,
         m_vl: int,
         n_vl: int,
-        ext_load_strategy: str = "legacy_half_vl",
     ) -> "KernelSpec":
         return cls(
             M=M,
@@ -74,7 +67,6 @@ class KernelSpec:
             trans_b=Transpose(transB),
             precision=Precision(data_type),
             tile=TileShape(m_vl=m_vl, n_vl=n_vl),
-            ext_load_strategy=ExtLoadStrategy(ext_load_strategy),
         )
 
     @property
@@ -101,12 +93,6 @@ class KernelSpec:
     def is_ext_precision(self) -> bool:
         return self.precision in (Precision.BF16, Precision.FP16)
 
-    def is_legacy_ext_load(self) -> bool:
-        return self.ext_load_strategy is ExtLoadStrategy.LEGACY_HALF_VL
-
-    def is_experimental_ext_load(self) -> bool:
-        return self.ext_load_strategy is ExtLoadStrategy.EXPERIMENTAL
-
 
 @dataclass(frozen=True)
 class GenerationContext:
@@ -126,8 +112,5 @@ class GenerationContext:
     def is_ext_precision(self) -> bool:
         return self.spec.is_ext_precision()
 
-    def is_legacy_ext_load(self) -> bool:
-        return self.spec.is_legacy_ext_load()
-
-    def is_experimental_ext_load(self) -> bool:
-        return self.spec.is_experimental_ext_load()
+    def use_ext_paired_fast_path(self) -> bool:
+        return self.spec.gemm_type is GemmType.SMALL and self.spec.is_ext_precision()

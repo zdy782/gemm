@@ -110,14 +110,26 @@ def _emit_ext_contiguous_head_pair_fast(ctx, base, stride, tmp_base, role0, role
     return code_str
 
 
+def _emit_ext_contiguous_head_pair_safe(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
+    code_str = _emit_ext_contiguous_head(ctx, base, stride, tmp_base, role0, dst0, low_tmp, high_tmp)
+    code_str += _emit_ext_contiguous_lane(ctx, base, tmp_base, role1, dst1, 1, low_tmp, high_tmp)
+    return code_str
+
+
 def _emit_ext_contiguous_head_pair(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
     if role0 == role1:
         return _emit_ext_contiguous_head_pair_fast(
             ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp
         )
-    return _emit_ext_contiguous_head_mixed_pair(
+    # Mixed main/tail pairs only pay off when the paired 2VL chunk is full-width.
+    full_code = _emit_ext_contiguous_head_pair_fast(
+        ctx, base, stride, tmp_base, role0, role0, dst0, dst1, low_tmp, high_tmp
+    )
+    full_code += _zip_ext_predicate(ctx, role1)
+    partial_code = _emit_ext_contiguous_head_pair_safe(
         ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp
     )
+    return _emit_runtime_pair_select(ctx, role0, tile_size_from_vl(2), full_code, partial_code)
 
 
 def _emit_ext_contiguous_head_mixed_pair(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
@@ -163,6 +175,12 @@ def _emit_ext_contiguous_lane_fast_pair(ctx, base, paired_base, role, dst, lane,
     return code_str
 
 
+def _emit_ext_contiguous_lane_pair_safe(ctx, base, paired_base, role0, role1, dst0, dst1, lane, low_tmp, high_tmp):
+    code_str = _emit_ext_contiguous_lane(ctx, base, paired_base, role0, dst0, lane, low_tmp, high_tmp)
+    code_str += _emit_ext_contiguous_lane(ctx, base, paired_base, role1, dst1, lane + 1, low_tmp, high_tmp)
+    return code_str
+
+
 def _emit_ext_contiguous_lane(ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None):
     if next_dst is None:
         pred = _pred(ctx, role)
@@ -174,9 +192,23 @@ def _emit_ext_contiguous_lane(ctx, base, paired_base, role, dst, lane, low_tmp, 
         code_str += f"zip1      {dst}.h, {low_tmp}.h, {high_tmp}.h\n"
         return code_str
     if next_dst is not None and next_role != role:
-        return _emit_ext_contiguous_lane_mixed_pair(
+        full_code = _emit_ext_contiguous_lane_fast_pair(
+            ctx,
+            base,
+            paired_base,
+            role,
+            dst,
+            lane,
+            low_tmp,
+            high_tmp,
+            next_dst=next_dst,
+            next_role=role,
+        )
+        full_code += _zip_ext_predicate(ctx, next_role)
+        partial_code = _emit_ext_contiguous_lane_pair_safe(
             ctx, base, paired_base, role, next_role, dst, next_dst, lane, low_tmp, high_tmp
         )
+        return _emit_runtime_pair_select(ctx, role, tile_size_from_vl(lane + 2), full_code, partial_code)
     return _emit_ext_contiguous_lane_fast_pair(
         ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=next_dst, next_role=next_role
     )
@@ -228,6 +260,12 @@ def _emit_ext_contiguous_last_k_fast_pair(ctx, base, role, dst, lane, low_tmp, z
     return code_str
 
 
+def _emit_ext_contiguous_last_k_pair_safe(ctx, base, role0, role1, dst0, dst1, lane, low_tmp, zero_tmp):
+    code_str = _emit_ext_contiguous_last_k(ctx, base, role0, dst0, lane, low_tmp, zero_tmp)
+    code_str += _emit_ext_contiguous_last_k(ctx, base, role1, dst1, lane + 1, low_tmp, zero_tmp)
+    return code_str
+
+
 def _emit_ext_contiguous_last_k(ctx, base, role, dst, lane, low_tmp, zero_tmp, next_dst=None, next_role=None):
     if next_dst is None:
         pred = _pred(ctx, role)
@@ -242,7 +280,7 @@ def _emit_ext_contiguous_last_k(ctx, base, role, dst, lane, low_tmp, zero_tmp, n
         code_str += f"zip1      {dst}.h, {low_tmp}.h, {zero_tmp}.h\n"
         return code_str
     if next_dst is not None and next_role != role:
-        return _emit_ext_contiguous_last_k_mixed_pair(
+        return _emit_ext_contiguous_last_k_pair_safe(
             ctx, base, role, next_role, dst, next_dst, lane, low_tmp, zero_tmp
         )
     return _emit_ext_contiguous_last_k_fast_pair(
@@ -442,7 +480,7 @@ def _emit_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None):
     regs = ctx.registers
     if config.a_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
-            if ctx.is_experimental_ext_load() and next_dst is not None:
+            if ctx.use_ext_paired_fast_path() and next_dst is not None:
                 return _emit_ext_contiguous_head_pair(
                     ctx,
                     regs.pointers.pA0,
@@ -467,21 +505,27 @@ def _emit_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None):
             )
         return _emit_non_ext_contiguous(ldaopt, ctx, regs.pointers.pA0, role, a0, 0)
     if ctx.is_ext_precision():
-        if ctx.is_experimental_ext_load() and next_dst is not None:
-            code_str = f"add       {regs.address.TMP_PTR}, {regs.pointers.pA0}, #2\n"
-            code_str += _emit_gather_base(regs.pointers.pAn, regs, 1, True)
-            code_str += _emit_ext_gather_pair_two_bases(
+        if ctx.use_ext_paired_fast_path() and next_dst is not None:
+            code_str = _emit_ext_gather_pair(
                 ctx,
                 regs.pointers.pA0,
-                regs.address.TMP_PTR,
                 role,
+                regs.vectors.a_index,
+                a0,
+                regs.vectors.a_low,
+                regs.vectors.pair_high,
+                regs.address.TMP_PTR,
+            )
+            code_str += _emit_gather_base(regs.pointers.pAn, regs, 1, True)
+            code_str += _emit_ext_gather_pair(
+                ctx,
                 regs.pointers.pAn,
                 next_role,
                 regs.vectors.a_index,
-                a0,
                 next_dst,
                 regs.vectors.a_low,
                 regs.vectors.pair_high,
+                regs.address.TMP_PTR,
             )
             return code_str
         return _emit_ext_gather_pair(
@@ -493,7 +537,7 @@ def _emit_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None):
             regs.vectors.a_low,
             regs.vectors.pair_high,
             regs.address.TMP_PTR,
-            next_dst=next_dst if ctx.is_experimental_ext_load() and next_dst is not None else None,
+            next_dst=next_dst if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
             next_role=next_role,
         )
     return _emit_non_ext_gather(ldaopt, ctx, regs.pointers.pA0, role, regs.vectors.a_index, a0)
@@ -503,7 +547,7 @@ def _emit_b_head(ctx, config, b0, role, ldopt, next_dst=None, next_role=None):
     regs = ctx.registers
     if config.b_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
-            if ctx.is_experimental_ext_load() and next_dst is not None:
+            if ctx.use_ext_paired_fast_path() and next_dst is not None:
                 return _emit_ext_contiguous_head_pair(
                     ctx,
                     regs.pointers.pB0,
@@ -528,21 +572,27 @@ def _emit_b_head(ctx, config, b0, role, ldopt, next_dst=None, next_role=None):
             )
         return _emit_non_ext_contiguous(ldopt, ctx, regs.pointers.pB0, role, b0, 0)
     if ctx.is_ext_precision():
-        if ctx.is_experimental_ext_load() and next_dst is not None:
-            code_str = f"add       {regs.address.TMP_PTR1}, {regs.pointers.pB0}, #2\n"
-            code_str += _emit_gather_base(regs.pointers.pBn, regs, 1, False)
-            code_str += _emit_ext_gather_pair_two_bases(
+        if ctx.use_ext_paired_fast_path() and next_dst is not None:
+            code_str = _emit_ext_gather_pair(
                 ctx,
                 regs.pointers.pB0,
-                regs.address.TMP_PTR1,
                 role,
+                regs.vectors.b_index,
+                b0,
+                config.b_low_tmp,
+                config.b_high_tmp,
+                regs.address.TMP_PTR1,
+            )
+            code_str += _emit_gather_base(regs.pointers.pBn, regs, 1, False)
+            code_str += _emit_ext_gather_pair(
+                ctx,
                 regs.pointers.pBn,
                 next_role,
                 regs.vectors.b_index,
-                b0,
                 next_dst,
                 config.b_low_tmp,
                 config.b_high_tmp,
+                regs.address.TMP_PTR1,
             )
             return code_str
         return _emit_ext_gather_pair(
@@ -554,7 +604,7 @@ def _emit_b_head(ctx, config, b0, role, ldopt, next_dst=None, next_role=None):
             config.b_low_tmp,
             config.b_high_tmp,
             regs.address.TMP_PTR1,
-            next_dst=next_dst if ctx.is_experimental_ext_load() and next_dst is not None else None,
+            next_dst=next_dst if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
             next_role=next_role,
         )
     return _emit_non_ext_gather(ldopt, ctx, regs.pointers.pB0, role, regs.vectors.b_index, b0)
@@ -585,20 +635,26 @@ def _emit_a_last_k(ctx, config, a_reg, role, lane, next_reg=None, next_role=None
             lane,
             regs.vectors.a_low,
             regs.vectors.pair_high,
-            next_dst=next_reg if ctx.is_experimental_ext_load() and next_reg is not None else None,
+            next_dst=next_reg if ctx.use_ext_paired_fast_path() and next_reg is not None else None,
             next_role=next_role,
         )
     code_str = _emit_gather_base_setup(regs.pointers.pAn, regs, lane, True)
-    if ctx.is_experimental_ext_load() and next_reg is not None:
-        code_str += _emit_gather_base(regs.address.TMP_PTR2, regs, lane + 1, True)
-        code_str += _emit_ext_gather_last_k_two_bases(
+    if ctx.use_ext_paired_fast_path() and next_reg is not None:
+        code_str += _emit_ext_gather_last_k(
             ctx,
             _gather_base_register(regs, lane, True),
             role,
+            regs.vectors.a_index,
+            a_reg,
+            regs.vectors.a_low,
+            regs.vectors.pair_high,
+        )
+        code_str += _emit_gather_base(regs.address.TMP_PTR2, regs, lane + 1, True)
+        code_str += _emit_ext_gather_last_k(
+            ctx,
             regs.address.TMP_PTR2,
             next_role,
             regs.vectors.a_index,
-            a_reg,
             next_reg,
             regs.vectors.a_low,
             regs.vectors.pair_high,
@@ -612,7 +668,7 @@ def _emit_a_last_k(ctx, config, a_reg, role, lane, next_reg=None, next_role=None
         a_reg,
         regs.vectors.a_low,
         regs.vectors.pair_high,
-        next_dst=next_reg if ctx.is_experimental_ext_load() and next_reg is not None else None,
+        next_dst=next_reg if ctx.use_ext_paired_fast_path() and next_reg is not None else None,
         next_role=next_role,
     )
     return code_str
@@ -629,20 +685,26 @@ def _emit_b_last_k(ctx, config, b_reg, role, lane, next_reg=None, next_role=None
             lane,
             config.b_low_tmp,
             config.b_high_tmp,
-            next_dst=next_reg if ctx.is_experimental_ext_load() and next_reg is not None else None,
+            next_dst=next_reg if ctx.use_ext_paired_fast_path() and next_reg is not None else None,
             next_role=next_role,
         )
     code_str = _emit_gather_base_setup(regs.pointers.pBn, regs, lane, False)
-    if ctx.is_experimental_ext_load() and next_reg is not None:
-        code_str += _emit_gather_base(regs.address.TMP_PTR2, regs, lane + 1, False)
-        code_str += _emit_ext_gather_last_k_two_bases(
+    if ctx.use_ext_paired_fast_path() and next_reg is not None:
+        code_str += _emit_ext_gather_last_k(
             ctx,
             _gather_base_register(regs, lane, False),
             role,
+            regs.vectors.b_index,
+            b_reg,
+            config.b_low_tmp,
+            config.b_high_tmp,
+        )
+        code_str += _emit_gather_base(regs.address.TMP_PTR2, regs, lane + 1, False)
+        code_str += _emit_ext_gather_last_k(
+            ctx,
             regs.address.TMP_PTR2,
             next_role,
             regs.vectors.b_index,
-            b_reg,
             next_reg,
             config.b_low_tmp,
             config.b_high_tmp,
@@ -656,7 +718,7 @@ def _emit_b_last_k(ctx, config, b_reg, role, lane, next_reg=None, next_role=None
         b_reg,
         config.b_low_tmp,
         config.b_high_tmp,
-        next_dst=next_reg if ctx.is_experimental_ext_load() and next_reg is not None else None,
+        next_dst=next_reg if ctx.use_ext_paired_fast_path() and next_reg is not None else None,
         next_role=next_role,
     )
     return code_str
@@ -679,28 +741,34 @@ def _emit_a_lane(ctx, config, dst, role, lane, ldaopt, next_dst=None, next_role=
                 lane,
                 regs.vectors.a_low,
                 regs.vectors.pair_high,
-                next_dst=next_dst if ctx.is_experimental_ext_load() and next_dst is not None else None,
+                next_dst=next_dst if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
                 next_role=next_role,
             )
         return _emit_non_ext_contiguous(ldaopt, ctx, regs.pointers.pA0, role, dst, lane)
 
     code_str = _emit_gather_base(regs.pointers.pAn, regs, lane, True)
     if ctx.is_ext_precision():
-        if ctx.is_experimental_ext_load() and next_dst is not None:
-            code_str += f"add       {regs.address.TMP_PTR2}, {regs.pointers.pAn}, #2\n"
-            code_str += _emit_gather_base(regs.address.TMP_PTR1, regs, lane + 1, True)
-            code_str += _emit_ext_gather_pair_two_bases(
+        if ctx.use_ext_paired_fast_path() and next_dst is not None:
+            code_str += _emit_ext_gather_pair(
                 ctx,
                 regs.pointers.pAn,
-                regs.address.TMP_PTR2,
                 role,
+                regs.vectors.a_index,
+                dst,
+                regs.vectors.a_low,
+                regs.vectors.pair_high,
+                regs.address.TMP_PTR2,
+            )
+            code_str += _emit_gather_base(regs.address.TMP_PTR1, regs, lane + 1, True)
+            code_str += _emit_ext_gather_pair(
+                ctx,
                 regs.address.TMP_PTR1,
                 next_role,
                 regs.vectors.a_index,
-                dst,
                 next_dst,
                 regs.vectors.a_low,
                 regs.vectors.pair_high,
+                regs.address.TMP_PTR2,
             )
             return code_str
         code_str += _emit_ext_gather_pair(
@@ -712,7 +780,7 @@ def _emit_a_lane(ctx, config, dst, role, lane, ldaopt, next_dst=None, next_role=
             regs.vectors.a_low,
             regs.vectors.pair_high,
             regs.address.TMP_PTR2,
-            next_dst=next_dst if ctx.is_experimental_ext_load() and next_dst is not None else None,
+            next_dst=next_dst if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
             next_role=next_role,
         )
         return code_str
@@ -733,28 +801,34 @@ def _emit_b_lane(ctx, config, dst, role, lane, ldopt, next_dst=None, next_role=N
                 lane,
                 config.b_low_tmp,
                 config.b_high_tmp,
-                next_dst=next_dst if ctx.is_experimental_ext_load() and next_dst is not None else None,
+                next_dst=next_dst if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
                 next_role=next_role,
             )
         return _emit_non_ext_contiguous(ldopt, ctx, regs.pointers.pB0, role, dst, lane)
 
     code_str = _emit_gather_base(regs.pointers.pBn, regs, lane, False)
     if ctx.is_ext_precision():
-        if ctx.is_experimental_ext_load() and next_dst is not None:
-            code_str += f"add       {regs.address.TMP_PTR2}, {regs.pointers.pBn}, #2\n"
-            code_str += _emit_gather_base(regs.address.TMP_PTR, regs, lane + 1, False)
-            code_str += _emit_ext_gather_pair_two_bases(
+        if ctx.use_ext_paired_fast_path() and next_dst is not None:
+            code_str += _emit_ext_gather_pair(
                 ctx,
                 regs.pointers.pBn,
-                regs.address.TMP_PTR2,
                 role,
+                regs.vectors.b_index,
+                dst,
+                config.b_low_tmp,
+                config.b_high_tmp,
+                regs.address.TMP_PTR2,
+            )
+            code_str += _emit_gather_base(regs.address.TMP_PTR, regs, lane + 1, False)
+            code_str += _emit_ext_gather_pair(
+                ctx,
                 regs.address.TMP_PTR,
                 next_role,
                 regs.vectors.b_index,
-                dst,
                 next_dst,
                 config.b_low_tmp,
                 config.b_high_tmp,
+                regs.address.TMP_PTR2,
             )
             return code_str
         code_str += _emit_ext_gather_pair(
@@ -766,7 +840,7 @@ def _emit_b_lane(ctx, config, dst, role, lane, ldopt, next_dst=None, next_role=N
             config.b_low_tmp,
             config.b_high_tmp,
             regs.address.TMP_PTR2,
-            next_dst=next_dst if ctx.is_experimental_ext_load() and next_dst is not None else None,
+            next_dst=next_dst if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
             next_role=next_role,
         )
         return code_str
@@ -921,26 +995,26 @@ class GeneralGemmModel:
             a_pred_pre, a_pred, a_pred_post = _paired_ext_predicate(
                 ctx,
                 a_role,
-                a1_role if ctx.is_experimental_ext_load() and a1 is not None else None,
+                a1_role if ctx.use_ext_paired_fast_path() and a1 is not None else None,
             )
             b_pred_pre, b_pred, b_pred_post = _paired_ext_predicate(
                 ctx,
                 b_role,
-                b1_role if ctx.is_experimental_ext_load() and b1 is not None else None,
+                b1_role if ctx.use_ext_paired_fast_path() and b1 is not None else None,
             )
             code_str += a_pred_pre
             code_str += f"ld1h      {regs.vectors.a_low}.h, {a_pred}/z, [{regs.pointers.pA0}]\n"
             code_str += f"ld1h      {regs.vectors.pair_high}.h, {a_pred}/z, [{regs.pointers.pA0}, #1, MUL VL]\n"
             code_str += a_pred_post
             code_str += f"zip1      {a0}.h, {regs.vectors.a_low}.h, {regs.vectors.pair_high}.h\n"
-            if ctx.is_experimental_ext_load() and a1 is not None:
+            if ctx.use_ext_paired_fast_path() and a1 is not None:
                 code_str += f"zip2      {a1}.h, {regs.vectors.a_low}.h, {regs.vectors.pair_high}.h\n"
             code_str += b_pred_pre
             code_str += f"ld1h      {self._b_low(ctx)}.h, {b_pred}/z, [{regs.pointers.pB0}]\n"
             code_str += f"ld1h      {self._b_high(ctx)}.h, {b_pred}/z, [{regs.pointers.pB0}, #1, MUL VL]\n"
             code_str += b_pred_post
             code_str += f"zip1      {b0}.h, {self._b_low(ctx)}.h, {self._b_high(ctx)}.h\n"
-            if ctx.is_experimental_ext_load() and b1 is not None:
+            if ctx.use_ext_paired_fast_path() and b1 is not None:
                 code_str += f"zip2      {b1}.h, {self._b_low(ctx)}.h, {self._b_high(ctx)}.h\n"
             return code_str
         return (
@@ -963,14 +1037,14 @@ class GeneralGemmModel:
             pred_pre, pred, pred_post = _paired_ext_predicate(
                 ctx,
                 role,
-                next_role if ctx.is_experimental_ext_load() and next_dst is not None else None,
+                next_role if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
             )
             code_str += pred_pre
             code_str += f"ld1h     {regs.vectors.a_low}.h, {pred}/z, [{regs.pointers.pA0}, #{low_offset}, MUL VL]\n"
             code_str += f"ld1h     {regs.vectors.pair_high}.h, {pred}/z, [{regs.pointers.pA0}, #{high_offset}, MUL VL]\n"
             code_str += pred_post
             code_str += f"zip1     {dst}.h, {regs.vectors.a_low}.h, {regs.vectors.pair_high}.h\n"
-            if ctx.is_experimental_ext_load() and next_dst is not None:
+            if ctx.use_ext_paired_fast_path() and next_dst is not None:
                 code_str += f"zip2     {next_dst}.h, {regs.vectors.a_low}.h, {regs.vectors.pair_high}.h\n"
             return code_str
         return f"{ldaopt}     {dst}{get_ld_element_suffix(ctx)}, {_load_predicate(ctx, role)}, [{regs.pointers.pA0}, #{lane}, MUL VL]\n"
@@ -984,14 +1058,14 @@ class GeneralGemmModel:
             pred_pre, pred, pred_post = _paired_ext_predicate(
                 ctx,
                 role,
-                next_role if ctx.is_experimental_ext_load() and next_dst is not None else None,
+                next_role if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
             )
             code_str += pred_pre
             code_str += f"ld1h      {self._b_low(ctx)}.h, {pred}/z, [{regs.pointers.pB0}, #{low_offset}, MUL VL]\n"
             code_str += f"ld1h      {self._b_high(ctx)}.h, {pred}/z, [{regs.pointers.pB0}, #{high_offset}, MUL VL]\n"
             code_str += pred_post
             code_str += f"zip1      {dst}.h, {self._b_low(ctx)}.h, {self._b_high(ctx)}.h\n"
-            if ctx.is_experimental_ext_load() and next_dst is not None:
+            if ctx.use_ext_paired_fast_path() and next_dst is not None:
                 code_str += f"zip2      {next_dst}.h, {self._b_low(ctx)}.h, {self._b_high(ctx)}.h\n"
             return code_str
         return f"{ldopt}      {dst}{get_ld_element_suffix(ctx)}, {_load_predicate(ctx, role)}, [{regs.pointers.pB0}, #{lane}, MUL VL]\n"

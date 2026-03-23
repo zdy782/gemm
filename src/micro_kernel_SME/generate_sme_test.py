@@ -18,7 +18,6 @@ def generate_sme_asm(
     data_type: str = "fp32",
     m_vl: int = 1,
     n_vl: int = 4,
-    ext_load_strategy: str = "legacy_half_vl",
 ):
     """Generate .S assembly file for SME GEMM kernel
 
@@ -55,7 +54,6 @@ def generate_sme_asm(
         data_type,
         m_vl,
         n_vl,
-        ext_load_strategy,
     )
     assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
     ctx = GenerationContext(spec=spec, registers=DEFAULT_REGISTER_PLAN, model=resolve_model(spec))
@@ -80,7 +78,6 @@ def generate_sme_test_cpp(
     data_type: str = "fp32",
     m_vl: int = 1,
     n_vl: int = 4,
-    ext_load_strategy: str = "legacy_half_vl",
 ):
     """Generate C++ test file for SME GEMM kernel
 
@@ -116,7 +113,6 @@ def generate_sme_test_cpp(
         data_type,
         m_vl,
         n_vl,
-        ext_load_strategy,
     )
     assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
 
@@ -196,7 +192,7 @@ void* _mm_malloc(size_t align, size_t sz)
 
 int main()
 {{
-    printf("M={M}, N={N}, K={K}, lda={lda}, ldb={ldb}, ldc={ldc}, transA={transA}, transB={transB}, REPEAT={repeat}, data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}, ext_load_strategy={ext_load_strategy} ");
+    printf("M={M}, N={N}, K={K}, lda={lda}, ldb={ldb}, ldc={ldc}, transA={transA}, transB={transB}, REPEAT={repeat}, data_type={data_type}, m_vl={m_vl}, n_vl={n_vl} ");
     
     #define M {M}
     #define N {N}

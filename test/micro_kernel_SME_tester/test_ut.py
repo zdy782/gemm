@@ -11,12 +11,6 @@ setup_environment()
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run SME UT cases from CSV")
-    parser.add_argument(
-        "--ext_load_strategy",
-        type=str,
-        default="legacy_half_vl",
-        choices=["legacy_half_vl", "experimental"],
-    )
     return parser.parse_args()
 
 
@@ -75,8 +69,7 @@ def main():
             print(f"  M={M}, N={N}, K={K}, lda={lda}, ldb={ldb}, ldc={ldc}")
             print(
                 f"  gemm_type={gemm_type}, transA={transA}, transB={transB}, "
-                f"data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}, "
-                f"ext_load_strategy={args.ext_load_strategy}"
+                f"data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}"
             )
 
             ok = run_single_test(
@@ -85,7 +78,6 @@ def main():
                 data_type=data_type,
                 m_vl=m_vl,
                 n_vl=n_vl,
-                ext_load_strategy=args.ext_load_strategy,
                 verbose=True,
             )
 
@@ -134,7 +126,7 @@ def main():
                 print(f"  gemm_type={case['gemm_type']}, transA={case['transA']}, transB={case['transB']}")
                 print(
                     f"  data_type={case['data_type']}, m_vl={case['m_vl']}, "
-                    f"n_vl={case['n_vl']}, ext_load_strategy={args.ext_load_strategy}"
+                    f"n_vl={case['n_vl']}"
                 )
         print("-" * 80)
 
