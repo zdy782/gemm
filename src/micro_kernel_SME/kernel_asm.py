@@ -26,6 +26,18 @@ def _emit_load(ctx, op, regs_a, regs_b, load_inst, lda_inst, last_k):
     model = ctx.model
     if op["kind"] == "load_ab":
         load_fn = model.load_a0b0_last_k if last_k else model.load_a0b0
+        a_next = regs_a[op["next_a"]] if op.get("next_a") is not None else None
+        b_next = regs_b[op["next_b"]] if op.get("next_b") is not None else None
+        if a_next is None and b_next is None:
+            return load_fn(
+                ctx,
+                regs_a[op["a"]],
+                op["a_role"],
+                regs_b[op["b"]],
+                op["b_role"],
+                load_inst,
+                lda_inst,
+            )
         return load_fn(
             ctx,
             regs_a[op["a"]],
@@ -34,13 +46,20 @@ def _emit_load(ctx, op, regs_a, regs_b, load_inst, lda_inst, last_k):
             op["b_role"],
             load_inst,
             lda_inst,
+            a_next,
+            b_next,
+            op.get("next_a_role"),
+            op.get("next_b_role"),
         )
 
     reg_idx = op["idx"]
     suffix = "_last_k" if last_k else ""
     load_fn = getattr(model, f"load_{op['kind']}{reg_idx}{suffix}")
     regs = regs_a if op["kind"] == "a" else regs_b
-    return load_fn(ctx, regs[reg_idx], op["role"], load_inst, lda_inst)
+    next_reg = regs[op["next_idx"]] if op.get("next_idx") is not None else None
+    if next_reg is None:
+        return load_fn(ctx, regs[reg_idx], op["role"], load_inst, lda_inst)
+    return load_fn(ctx, regs[reg_idx], op["role"], load_inst, lda_inst, next_reg, op.get("next_role"))
 
 
 def _emit_mopa(ctx, op, regs_a, regs_b):
@@ -162,69 +181,162 @@ KERNEL_LAST_K_PLANS = {
     "1VL_1VL": KERNEL_PLANS["1VL_1VL"][:2],
 }
 
+EXPERIMENTAL_KERNEL_PLANS = {
+    "4VL_1VL": [
+        {"kind": "load_ab", "a": 0, "a_role": "m_main", "next_a": 1, "next_a_role": "m_main", "b": 0, "b_role": "n_main"},
+        {"kind": "mopa", "za": 0, "a": 0, "b": 0, "m_role": "m_main", "n_role": "n_main"},
+        {"kind": "mopa", "za": 1, "a": 1, "b": 0, "m_role": "m_main", "n_role": "n_main"},
+        {"kind": "update", "ptr": "B"},
+        {"kind": "a", "idx": 2, "role": "m_main", "next_idx": 3, "next_role": "m_tail"},
+        {"kind": "mopa", "za": 2, "a": 2, "b": 0, "m_role": "m_main", "n_role": "n_main"},
+        {"kind": "mopa", "za": 3, "a": 3, "b": 0, "m_role": "m_tail", "n_role": "n_main"},
+        {"kind": "update", "ptr": "A"},
+    ],
+    "1VL_4VL": [
+        {"kind": "load_ab", "a": 0, "a_role": "m_main", "b": 0, "b_role": "n_main", "next_b": 1, "next_b_role": "n_main"},
+        {"kind": "mopa", "za": 0, "a": 0, "b": 0, "m_role": "m_main", "n_role": "n_main"},
+        {"kind": "mopa", "za": 1, "a": 0, "b": 1, "m_role": "m_main", "n_role": "n_main"},
+        {"kind": "update", "ptr": "A"},
+        {"kind": "b", "idx": 2, "role": "n_main", "next_idx": 3, "next_role": "n_tail"},
+        {"kind": "mopa", "za": 2, "a": 0, "b": 2, "m_role": "m_main", "n_role": "n_main"},
+        {"kind": "mopa", "za": 3, "a": 0, "b": 3, "m_role": "m_main", "n_role": "n_tail"},
+        {"kind": "update", "ptr": "B"},
+    ],
+    "3VL_1VL": [
+        {"kind": "load_ab", "a": 0, "a_role": "m_main", "next_a": 1, "next_a_role": "m_main", "b": 0, "b_role": "n_main"},
+        {"kind": "mopa", "za": 0, "a": 0, "b": 0, "m_role": "m_main", "n_role": "n_main"},
+        {"kind": "mopa", "za": 1, "a": 1, "b": 0, "m_role": "m_main", "n_role": "n_main"},
+        {"kind": "update", "ptr": "B"},
+        {"kind": "a", "idx": 2, "role": "m_tail"},
+        {"kind": "mopa", "za": 2, "a": 2, "b": 0, "m_role": "m_tail", "n_role": "n_main"},
+        {"kind": "update", "ptr": "A"},
+    ],
+    "1VL_3VL": [
+        {"kind": "load_ab", "a": 0, "a_role": "m_main", "b": 0, "b_role": "n_main", "next_b": 1, "next_b_role": "n_main"},
+        {"kind": "mopa", "za": 0, "a": 0, "b": 0, "m_role": "m_main", "n_role": "n_main"},
+        {"kind": "mopa", "za": 1, "a": 0, "b": 1, "m_role": "m_main", "n_role": "n_main"},
+        {"kind": "update", "ptr": "A"},
+        {"kind": "b", "idx": 2, "role": "n_tail"},
+        {"kind": "mopa", "za": 2, "a": 0, "b": 2, "m_role": "m_main", "n_role": "n_tail"},
+        {"kind": "update", "ptr": "B"},
+    ],
+    "2VL_2VL": [
+        {
+            "kind": "load_ab",
+            "a": 0,
+            "a_role": "m_main",
+            "next_a": 1,
+            "next_a_role": "m_tail",
+            "b": 0,
+            "b_role": "n_main",
+            "next_b": 1,
+            "next_b_role": "n_tail",
+        },
+        {"kind": "mopa", "za": 0, "a": 0, "b": 0, "m_role": "m_main", "n_role": "n_main"},
+        {"kind": "mopa", "za": 1, "a": 0, "b": 1, "m_role": "m_main", "n_role": "n_tail"},
+        {"kind": "mopa", "za": 2, "a": 1, "b": 0, "m_role": "m_tail", "n_role": "n_main"},
+        {"kind": "mopa", "za": 3, "a": 1, "b": 1, "m_role": "m_tail", "n_role": "n_tail"},
+        {"kind": "update", "ptr": "A"},
+        {"kind": "update", "ptr": "B"},
+    ],
+    "1VL_2VL": [
+        {"kind": "load_ab", "a": 0, "a_role": "m_main", "b": 0, "b_role": "n_main", "next_b": 1, "next_b_role": "n_tail"},
+        {"kind": "mopa", "za": 0, "a": 0, "b": 0, "m_role": "m_main", "n_role": "n_main"},
+        {"kind": "mopa", "za": 1, "a": 0, "b": 1, "m_role": "m_main", "n_role": "n_tail"},
+        {"kind": "update", "ptr": "A"},
+        {"kind": "update", "ptr": "B"},
+    ],
+    "2VL_1VL": [
+        {"kind": "load_ab", "a": 0, "a_role": "m_main", "next_a": 1, "next_a_role": "m_tail", "b": 0, "b_role": "n_main"},
+        {"kind": "mopa", "za": 0, "a": 0, "b": 0, "m_role": "m_main", "n_role": "n_main"},
+        {"kind": "mopa", "za": 2, "a": 1, "b": 0, "m_role": "m_tail", "n_role": "n_main"},
+        {"kind": "update", "ptr": "A"},
+        {"kind": "update", "ptr": "B"},
+    ],
+}
+
+EXPERIMENTAL_LAST_K_PLANS = EXPERIMENTAL_KERNEL_PLANS
+
+
+def _experimental_plan(ctx, key, last_k):
+    if key == "1VL_1VL":
+        return None
+    table = EXPERIMENTAL_LAST_K_PLANS if last_k else EXPERIMENTAL_KERNEL_PLANS
+    if key in table:
+        return table[key]
+    return None
+
+
+def _active_plan(ctx, key, last_k):
+    if ctx.is_ext_precision() and ctx.is_experimental_ext_load():
+        experimental_plan = _experimental_plan(ctx, key, last_k)
+        if experimental_plan is not None:
+            return experimental_plan
+    return KERNEL_LAST_K_PLANS[key] if last_k else KERNEL_PLANS[key]
+
 
 def kernel_4VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_PLANS["4VL_1VL"], False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "4VL_1VL", False), False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_4VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_PLANS["1VL_4VL"], False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "1VL_4VL", False), False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_3VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_PLANS["3VL_1VL"], False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "3VL_1VL", False), False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_3VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_PLANS["1VL_3VL"], False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "1VL_3VL", False), False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_2VL_2VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_PLANS["2VL_2VL"], False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "2VL_2VL", False), False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_2VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_PLANS["1VL_2VL"], False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "1VL_2VL", False), False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_2VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_PLANS["2VL_1VL"], False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "2VL_1VL", False), False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_PLANS["1VL_1VL"], False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "1VL_1VL", False), False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_4VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_LAST_K_PLANS["4VL_1VL"], True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "4VL_1VL", True), True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_4VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_LAST_K_PLANS["1VL_4VL"], True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "1VL_4VL", True), True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_3VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_LAST_K_PLANS["3VL_1VL"], True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "3VL_1VL", True), True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_3VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_LAST_K_PLANS["1VL_3VL"], True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "1VL_3VL", True), True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_2VL_2VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_LAST_K_PLANS["2VL_2VL"], True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "2VL_2VL", True), True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_2VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_LAST_K_PLANS["1VL_2VL"], True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "1VL_2VL", True), True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_2VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_LAST_K_PLANS["2VL_1VL"], True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "2VL_1VL", True), True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, KERNEL_LAST_K_PLANS["1VL_1VL"], True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _emit_kernel(ctx, _active_plan(ctx, "1VL_1VL", True), True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def save_zacol(pc, off, za, base_idx, idx, pg, rab0, rc0):

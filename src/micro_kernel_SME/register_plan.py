@@ -201,7 +201,8 @@ class PredicateRegisters:
     ext_m_main: str = "p4"
     ext_m_tail: str = "p5"
     ext_n_main: str = "p6"
-    false_all: str = "p7"
+    ext_n_tail: str = "p7"
+    false_all: str = "p15"
 
 
 @dataclass(frozen=True)
@@ -211,7 +212,7 @@ class VectorRegisters:
     a_low: str = "z26"
     pair_high: str = "z29"
     b_low: str = "z28"
-    b_high: str = "z30"
+    b_high: str = "z29"
     b_contiguous_low: str = "z27"
     save_tmp: str = "z25"
     save_tmp1: str = "z26"
@@ -253,7 +254,7 @@ class RegisterPlan:
             "m_main": self.predicates.ext_m_main,
             "m_tail": self.predicates.ext_m_tail,
             "n_main": self.predicates.ext_n_main,
-            "n_tail": self.predicates.n_tail,
+            "n_tail": self.predicates.ext_n_tail,
         }
         return mapping[role]
 
