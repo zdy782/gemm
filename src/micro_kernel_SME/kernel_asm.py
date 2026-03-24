@@ -213,54 +213,22 @@ def _new_kernel_label(prefix):
     return f".L_kernel_asm_{prefix}_{_KERNEL_LABEL_COUNTER}"
 
 
-def _default_lane_roles(side, vl_count):
-    # Start every lane as `main` except the final logical lane, which is the default tail lane for that axis width.
-    lane_kinds = {
-        1: ("main",),
-        2: ("main", "tail"),
-        3: ("main", "main", "tail"),
-        4: ("main", "main", "main", "tail"),
+def _full_chunk_pairs(vl_count):
+    # A selected `2VL` or `4VL` tile may pair every physical `2VL` chunk even when the second logical lane is only partially full.
+    pair_map = {
+        1: (),
+        2: ((0, 1),),
+        3: ((0, 1),),
+        4: ((0, 1), (2, 3)),
     }
-    prefix = "m" if side == "a" else "n"
-    return {lane: f"{prefix}_{kind}" for lane, kind in enumerate(lane_kinds[vl_count])}
+    return pair_map[vl_count]
 
 
-def _same_role_pair_specs(side, vl_count, leading_only=False):
-    # Same-role pairs are the only lanes that may legally upgrade from safe scalar loads to `zip1+zip2` pairing.
-    lane_roles = _default_lane_roles(side, vl_count)
-    pair_specs = []
-    for lane in range(0, vl_count - 1, 2):
-        next_lane = lane + 1
-        if lane_roles[lane] != lane_roles[next_lane]:
-            continue
-        pair_specs.append((lane, next_lane, lane_roles[lane]))
-        if leading_only:
-            break
-    return tuple(pair_specs)
-
-
-def _full_pair_specs(side, vl_count):
-    # Full pairing keeps every eligible same-role `2VL` chunk on this axis in paired form.
-    return _same_role_pair_specs(side, vl_count, leading_only=False)
-
-
-def _hybrid_pair_specs(side, vl_count):
-    # Hybrid pairing only upgrades the first eligible `2VL` chunk and leaves the remaining lanes on the safe path.
-    return _same_role_pair_specs(side, vl_count, leading_only=True)
-
-
-def _pair_spec_set(pair_specs):
-    # Strip pair specs down to lane tuples so later rewrites can test membership cheaply.
-    return {(lane0, lane1) for lane0, lane1, _ in pair_specs}
-
-
-def _lane_roles_with_pairs(side, vl_count, pair_specs):
-    # Rewrite default roles so paired lanes both advertise the same logical role to the load helpers and mopa records.
-    lane_roles = _default_lane_roles(side, vl_count)
-    for lane0, lane1, role in pair_specs:
-        lane_roles[lane0] = role
-        lane_roles[lane1] = role
-    return lane_roles
+def _leading_chunk_pairs(vl_count):
+    # `3VL` tiles only pair their leading `2VL` chunk and keep the last `1VL` as a scalar lane.
+    if vl_count <= 1:
+        return ()
+    return ((0, 1),)
 
 
 def _load_lane_index(op, side):
@@ -303,21 +271,6 @@ def _set_paired_load(op, side, next_idx, next_role):
     op["next_role"] = next_role
 
 
-def _rewrite_plan_roles(plan, a_roles, b_roles):
-    # Push the chosen lane-role map through the whole plan so loads and mopa predicates stay consistent.
-    for op in plan:
-        if op["kind"] == "load_ab":
-            op["a_role"] = a_roles[op["a"]]
-            op["b_role"] = b_roles[op["b"]]
-        elif op["kind"] == "a":
-            op["role"] = a_roles[op["idx"]]
-        elif op["kind"] == "b":
-            op["role"] = b_roles[op["idx"]]
-        elif op["kind"] == "mopa":
-            op["m_role"] = a_roles[op["a"]]
-            op["n_role"] = b_roles[op["b"]]
-
-
 def _collapse_side_pairs(plan, side, lane_pairs):
     # Merge adjacent same-side load records into one paired load record without crossing a pointer update boundary.
     ptr_name = "A" if side == "a" else "B"
@@ -356,22 +309,13 @@ def _collapse_side_pairs(plan, side, lane_pairs):
 
 
 def _build_small_plan_variant(key, last_k, a_pairs=(), b_pairs=()):
-    # Build one small-kernel plan by starting from the scalar schedule and only collapsing the lane pairs this tile can really support.
+    # Build one small-kernel plan by collapsing the physical `2VL` chunks that the current tile shape is allowed to pair.
     base_plan = deepcopy(KERNEL_LAST_K_PLANS[key] if last_k else KERNEL_PLANS[key])
-    m_vl, n_vl = _KEY_TILE_VL[key]
-    a_roles = _lane_roles_with_pairs("a", m_vl, a_pairs)
-    b_roles = _lane_roles_with_pairs("b", n_vl, b_pairs)
-    _rewrite_plan_roles(base_plan, a_roles, b_roles)
     if a_pairs:
-        base_plan = _collapse_side_pairs(base_plan, "a", _pair_spec_set(a_pairs))
+        base_plan = _collapse_side_pairs(base_plan, "a", set(a_pairs))
     if b_pairs:
-        base_plan = _collapse_side_pairs(base_plan, "b", _pair_spec_set(b_pairs))
+        base_plan = _collapse_side_pairs(base_plan, "b", set(b_pairs))
     return base_plan
-
-
-def _axis_min_register(ctx, side):
-    # Select the live `MIN_M` or `MIN_N` remainder register that tells us whether one axis still spans a full chunk.
-    return ctx.registers.dims.MIN_M if side == "a" else ctx.registers.dims.MIN_N
 
 
 def _side_is_contiguous(ctx, side):
@@ -383,57 +327,13 @@ def _side_is_contiguous(ctx, side):
     return getattr(config, attr, None) == "contiguous"
 
 
-def _gen_axis_plan_select(ctx, side, threshold, partial_code, full_code):
-    # Use one remainder check to choose between the safe chunk plan and the fully paired chunk plan for a single contiguous axis.
-    fast_label = _new_kernel_label(f"{side}_full")
-    done_label = _new_kernel_label(f"{side}_done")
-    dim_reg = _axis_min_register(ctx, side)
-    code_str = f"cmp       {dim_reg}, #{threshold}\n"
-    code_str += f"bge       {fast_label}\n"
-    code_str += partial_code
-    code_str += f"b         {done_label}\n"
-    code_str += f"{fast_label}:\n"
-    code_str += full_code
-    code_str += f"{done_label}:\n"
-    return code_str
-
-
-def _gen_dual_axis_plan_select(ctx, m_threshold, n_threshold, safe_code, a_code, b_code, both_code):
-    # `2VL x 2VL` checks M and N separately so exact tiles can pair both axes while mixed exact/tail tiles still keep a one-sided upgrade.
-    a_full_label = _new_kernel_label("m_full")
-    b_check_label = _new_kernel_label("n_check")
-    b_full_under_safe_label = _new_kernel_label("n_full_safe")
-    both_full_label = _new_kernel_label("both_full")
-    done_label = _new_kernel_label("dual_done")
-
-    code_str = f"cmp       {ctx.registers.dims.MIN_M}, #{m_threshold}\n"
-    code_str += f"bge       {a_full_label}\n"
-    code_str += f"{b_check_label}:\n"
-    code_str += f"cmp       {ctx.registers.dims.MIN_N}, #{n_threshold}\n"
-    code_str += f"bge       {b_full_under_safe_label}\n"
-    code_str += safe_code
-    code_str += f"b         {done_label}\n"
-    code_str += f"{b_full_under_safe_label}:\n"
-    code_str += b_code
-    code_str += f"b         {done_label}\n"
-    code_str += f"{a_full_label}:\n"
-    code_str += f"cmp       {ctx.registers.dims.MIN_N}, #{n_threshold}\n"
-    code_str += f"bge       {both_full_label}\n"
-    code_str += a_code
-    code_str += f"b         {done_label}\n"
-    code_str += f"{both_full_label}:\n"
-    code_str += both_code
-    code_str += f"{done_label}:\n"
-    return code_str
-
-
 def _gen_plan_code(ctx, key, last_k, plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
     # Keep one wrapper so every runtime branch feeds through the same kernel emitter entrypoint.
     return _gen_kernel(ctx, plan, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def _gen_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    # Choose the active plan for this tile by starting safe and selectively upgrading exact contiguous chunks to paired execution.
+    # Choose the active plan for this tile by pairing every contiguous chunk that belongs to the loop-selected shape.
     safe_plan = _build_small_plan_variant(key, last_k)
     safe_code = _gen_plan_code(ctx, key, last_k, safe_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
@@ -450,121 +350,61 @@ def _gen_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=N
     if key == "1VL_2VL":
         if not b_contig:
             return safe_code
-        # `1x2` only upgrades when both N lanes share the same logical role, so `main + tail` stays on the scalar-safe path.
-        b_pairs = _full_pair_specs("b", n_vl)
-        if not b_pairs:
-            return safe_code
+        # Once L1 selected `1x2`, the whole contiguous `2VL` chunk may pair even if the second logical lane is partial.
+        b_pairs = _full_chunk_pairs(n_vl)
         full_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs)
-        full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-        return _gen_axis_plan_select(ctx, "b", tile_size_from_vl(2), safe_code, full_code)
+        return _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
     if key == "2VL_1VL":
         if not a_contig:
             return safe_code
-        a_pairs = _full_pair_specs("a", m_vl)
-        if not a_pairs:
-            return safe_code
+        a_pairs = _full_chunk_pairs(m_vl)
         full_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs)
-        full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-        return _gen_axis_plan_select(ctx, "a", tile_size_from_vl(2), safe_code, full_code)
+        return _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
     if key == "1VL_3VL":
         if not b_contig:
             return safe_code
-        b_pairs = _hybrid_pair_specs("b", n_vl)
-        if not b_pairs:
-            return safe_code
+        b_pairs = _leading_chunk_pairs(n_vl)
         hybrid_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs)
         return _gen_plan_code(ctx, key, last_k, hybrid_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
     if key == "3VL_1VL":
         if not a_contig:
             return safe_code
-        a_pairs = _hybrid_pair_specs("a", m_vl)
-        if not a_pairs:
-            return safe_code
+        a_pairs = _leading_chunk_pairs(m_vl)
         hybrid_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs)
         return _gen_plan_code(ctx, key, last_k, hybrid_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
     if key == "1VL_4VL":
         if not b_contig:
             return safe_code
-        hybrid_pairs = _hybrid_pair_specs("b", n_vl)
-        if not hybrid_pairs:
-            return safe_code
-        hybrid_plan = _build_small_plan_variant(key, last_k, b_pairs=hybrid_pairs)
-        hybrid_code = _gen_plan_code(ctx, key, last_k, hybrid_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-        full_pairs = _full_pair_specs("b", n_vl)
-        if full_pairs == hybrid_pairs:
-            return hybrid_code
+        # Once L1 selected `1x4`, both N-side `2VL` chunks may pair and the pg state will naturally shrink lane 3 when needed.
+        full_pairs = _full_chunk_pairs(n_vl)
         full_plan = _build_small_plan_variant(key, last_k, b_pairs=full_pairs)
-        full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-        return _gen_axis_plan_select(ctx, "b", tile_size_from_vl(4), hybrid_code, full_code)
+        return _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
     if key == "4VL_1VL":
         if not a_contig:
             return safe_code
-        hybrid_pairs = _hybrid_pair_specs("a", m_vl)
-        if not hybrid_pairs:
-            return safe_code
-        hybrid_plan = _build_small_plan_variant(key, last_k, a_pairs=hybrid_pairs)
-        hybrid_code = _gen_plan_code(ctx, key, last_k, hybrid_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-        full_pairs = _full_pair_specs("a", m_vl)
-        if full_pairs == hybrid_pairs:
-            return hybrid_code
+        # Once L2 selected `4x1`, both M-side `2VL` chunks may pair and the pg state will naturally shrink lane 3 when needed.
+        full_pairs = _full_chunk_pairs(m_vl)
         full_plan = _build_small_plan_variant(key, last_k, a_pairs=full_pairs)
-        full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-        return _gen_axis_plan_select(ctx, "a", tile_size_from_vl(4), hybrid_code, full_code)
+        return _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
     if key == "2VL_2VL":
         if a_contig and b_contig:
-            # `2x2` can be safe, A-paired, B-paired, or both-paired, so the runtime branch tree checks both remainders independently.
-            a_pairs = _full_pair_specs("a", m_vl)
-            b_pairs = _full_pair_specs("b", n_vl)
-            if not a_pairs and not b_pairs:
-                return safe_code
-            if a_pairs and not b_pairs:
-                full_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs)
-                full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-                return _gen_axis_plan_select(ctx, "a", tile_size_from_vl(2), safe_code, full_code)
-            if b_pairs and not a_pairs:
-                full_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs)
-                full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-                return _gen_axis_plan_select(ctx, "b", tile_size_from_vl(2), safe_code, full_code)
-            a_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs)
-            b_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs)
-            both_plan = _build_small_plan_variant(
-                key,
-                last_k,
-                a_pairs=a_pairs,
-                b_pairs=b_pairs,
-            )
-            a_code = _gen_plan_code(ctx, key, last_k, a_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-            b_code = _gen_plan_code(ctx, key, last_k, b_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-            both_code = _gen_plan_code(ctx, key, last_k, both_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-            return _gen_dual_axis_plan_select(
-                ctx,
-                tile_size_from_vl(2),
-                tile_size_from_vl(2),
-                safe_code,
-                a_code,
-                b_code,
-                both_code,
-            )
+            # Once both loops selected `2x2`, both contiguous axes pair their single `2VL` chunk even when lane 1 is partial.
+            both_plan = _build_small_plan_variant(key, last_k, a_pairs=_full_chunk_pairs(m_vl), b_pairs=_full_chunk_pairs(n_vl))
+            return _gen_plan_code(ctx, key, last_k, both_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
         if a_contig:
-            a_pairs = _full_pair_specs("a", m_vl)
-            if not a_pairs:
-                return safe_code
+            a_pairs = _full_chunk_pairs(m_vl)
             full_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs)
-            full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-            return _gen_axis_plan_select(ctx, "a", tile_size_from_vl(2), safe_code, full_code)
+            return _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
         if b_contig:
-            b_pairs = _full_pair_specs("b", n_vl)
-            if not b_pairs:
-                return safe_code
+            b_pairs = _full_chunk_pairs(n_vl)
             full_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs)
-            full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-            return _gen_axis_plan_select(ctx, "b", tile_size_from_vl(2), safe_code, full_code)
+            return _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
     return safe_code
 

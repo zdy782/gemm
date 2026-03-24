@@ -33,7 +33,7 @@ def _zip_ext_predicate(ctx, role):
 
 
 def _paired_ext_predicate(ctx, first_role, second_role=None):
-    # Prepare predicates for a paired load, including the mixed-role setup used by gather and last-k helpers.
+    # Prepare the paired load predicate, including the mixed main/tail form used when one logical lane is only partially full.
     second_role = first_role if second_role is None else second_role
     if second_role == first_role:
         return _zip_ext_predicate(ctx, first_role), _ext_pred(ctx, first_role), ""
@@ -43,15 +43,6 @@ def _paired_ext_predicate(ctx, first_role, second_role=None):
     post_load = _zip_ext_predicate(ctx, first_role)
     post_load += _zip_ext_predicate(ctx, second_role)
     return pre_load, target, post_load
-
-
-def _fast_pair_predicate(ctx, load_role, next_role=None):
-    # Same-role fast pairs can load both halves through one ext predicate without post-fixup.
-    next_role = load_role if next_role is None else next_role
-    code_str = _zip_ext_predicate(ctx, load_role)
-    if next_role != load_role:
-        code_str += f"zip1      {_ext_pred(ctx, next_role)}.h, {_pred(ctx, load_role)}.h, {_pred(ctx, load_role)}.h\n"
-    return code_str, _ext_pred(ctx, load_role), ""
 
 
 def _rdvl_lane_offset(registers, lane):
@@ -105,9 +96,9 @@ def _gen_ext_contiguous_head(ctx, base, stride, tmp_base, role, dst, low_tmp, hi
 
 
 def _gen_ext_contiguous_head_pair_fast(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
-    # Materialize the first contiguous same-role pair as two operands with one load pair plus `zip1+zip2`.
+    # Materialize the first contiguous `2VL` chunk as two operands with one load pair plus `zip1+zip2`.
     code_str = f""
-    pred_pre, pred, pred_post = _fast_pair_predicate(ctx, role0, role1)
+    pred_pre, pred, pred_post = _paired_ext_predicate(ctx, role0, role1)
     code_str += pred_pre
     code_str += f"ld1h      {low_tmp}.h, {pred}/z, [{base}]\n"
     code_str += f"add       {tmp_base}, {base}, {stride}, LSL #1\n"
@@ -117,42 +108,23 @@ def _gen_ext_contiguous_head_pair_fast(ctx, base, stride, tmp_base, role0, role1
     return code_str
 
 
-def _gen_ext_contiguous_head_pair_safe(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
-    # Fall back to two independent lane loads when the head pair is not eligible for fast pairing.
-    code_str = _gen_ext_contiguous_head(ctx, base, stride, tmp_base, role0, dst0, low_tmp, high_tmp)
-    code_str += _gen_ext_contiguous_lane(ctx, base, tmp_base, role1, dst1, 1, low_tmp, high_tmp)
-    return code_str
-
-
 def _gen_ext_contiguous_head_pair(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
-    # The head pair dispatcher only upgrades same-role chunks and leaves mixed chunks on the safe path.
-    if role0 == role1:
-        return _gen_ext_contiguous_head_pair_fast(
-            ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp
-        )
-    # Mixed-role head pairs stay safe because `main + tail` exact tiles were the main correctness failure mode.
-    return _gen_ext_contiguous_head_pair_safe(
+    # The head pair dispatcher always pairs one contiguous `2VL` chunk and lets the pg state describe whether lane 1 is partial.
+    return _gen_ext_contiguous_head_pair_fast(
         ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp
     )
 
 
 def _gen_ext_contiguous_lane_fast_pair(ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None):
-    # Load one later contiguous lane pair from the same logical role and shape it with `zip1+zip2`.
+    # Load one later contiguous `2VL` chunk and shape it with `zip1+zip2`, even when the second logical lane is only partially full.
     code_str = f""
-    pred_pre, pred, pred_post = _fast_pair_predicate(ctx, role, next_role if next_dst is not None else None)
+    pred_pre, pred, pred_post = _paired_ext_predicate(ctx, role, next_role if next_dst is not None else None)
     code_str += pred_pre
     code_str += _rdvl_lane_offset(ctx.registers, lane)
     code_str += f"ld1h      {low_tmp}.h, {pred}/z, [{base}, {ctx.registers.address.TMP_PTR2}, LSL #1]\n"
     code_str += f"ld1h      {high_tmp}.h, {pred}/z, [{paired_base}, {ctx.registers.address.TMP_PTR2}, LSL #1]\n"
     code_str += pred_post
     code_str += _gen_zip_pair(dst, next_dst, low_tmp, high_tmp)
-    return code_str
-
-
-def _gen_ext_contiguous_lane_pair_safe(ctx, base, paired_base, role0, role1, dst0, dst1, lane, low_tmp, high_tmp):
-    # Reuse the scalar lane loader twice when a later pair cannot safely share one paired load.
-    code_str = _gen_ext_contiguous_lane(ctx, base, paired_base, role0, dst0, lane, low_tmp, high_tmp)
-    code_str += _gen_ext_contiguous_lane(ctx, base, paired_base, role1, dst1, lane + 1, low_tmp, high_tmp)
     return code_str
 
 
@@ -167,11 +139,6 @@ def _gen_ext_contiguous_lane(ctx, base, paired_base, role, dst, lane, low_tmp, h
         code_str += f"ld1h      {high_tmp}.h, {pred}/z, [{paired_base}, {ctx.registers.address.TMP_PTR2}, LSL #1]\n"
         code_str += f"zip1      {dst}.h, {low_tmp}.h, {high_tmp}.h\n"
         return code_str
-    if next_dst is not None and next_role != role:
-        # Mixed-role lane pairs stay scalar because pairing them reintroduced `mov/ext/orr` fixup bugs.
-        return _gen_ext_contiguous_lane_pair_safe(
-            ctx, base, paired_base, role, next_role, dst, next_dst, lane, low_tmp, high_tmp
-        )
     return _gen_ext_contiguous_lane_fast_pair(
         ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=next_dst, next_role=next_role
     )
