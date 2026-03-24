@@ -53,7 +53,7 @@ def _get_kernel_fn(mvl, nvl, last_k=False):
     return kernel_map[(mvl, nvl)]
 
 
-def _emit_kernel_variant(ctx, variant_idx, mvl, nvl, last_k=False, load_inst=None):
+def _gen_kernel_variant(ctx, variant_idx, mvl, nvl, last_k=False, load_inst=None):
     kernel_fn = _get_kernel_fn(mvl, nvl, last_k=last_k)
     variant = ctx.registers.kernel_variant(variant_idx)
     if load_inst is None:
@@ -67,66 +67,66 @@ def _kernel_load_inst(ctx):
     return LD1 if ctx.spec.gemm_type is GemmType.SMALL else LDNT1
 
 
-def _emit_kernel_bc(ctx, mvl, nvl, last_k=False, load_inst=None):
+def _gen_kernel_bc(ctx, mvl, nvl, last_k=False, load_inst=None):
     code_parts = []
     # Each K block reuses the same four register variants twice. This matches
     # the original handwritten schedule and keeps the generated body regular.
     for variant_idx in (0, 1, 2, 3, 0, 1, 2, 3):
-        code_parts.append(_emit_kernel_variant(ctx, variant_idx, mvl, nvl, last_k=last_k, load_inst=load_inst))
+        code_parts.append(_gen_kernel_variant(ctx, variant_idx, mvl, nvl, last_k=last_k, load_inst=load_inst))
     return "".join(code_parts)
 
 
 def kernel_m0(ctx, mvl, nvl):
-    return _emit_kernel_variant(ctx, 0, mvl, nvl)
+    return _gen_kernel_variant(ctx, 0, mvl, nvl)
 
 
 def kernel_m1(ctx, mvl, nvl):
-    return _emit_kernel_variant(ctx, 1, mvl, nvl)
+    return _gen_kernel_variant(ctx, 1, mvl, nvl)
 
 
 def kernel_m2(ctx, mvl, nvl):
-    return _emit_kernel_variant(ctx, 2, mvl, nvl)
+    return _gen_kernel_variant(ctx, 2, mvl, nvl)
 
 
 def kernel_m3(ctx, mvl, nvl):
-    return _emit_kernel_variant(ctx, 3, mvl, nvl)
+    return _gen_kernel_variant(ctx, 3, mvl, nvl)
 
 
 def kernel_m0_last_k(ctx, mvl, nvl):
-    return _emit_kernel_variant(ctx, 0, mvl, nvl, last_k=True)
+    return _gen_kernel_variant(ctx, 0, mvl, nvl, last_k=True)
 
 
 def kernel_m1_last_k(ctx, mvl, nvl):
-    return _emit_kernel_variant(ctx, 1, mvl, nvl, last_k=True)
+    return _gen_kernel_variant(ctx, 1, mvl, nvl, last_k=True)
 
 
 def kernel_m2_last_k(ctx, mvl, nvl):
-    return _emit_kernel_variant(ctx, 2, mvl, nvl, last_k=True)
+    return _gen_kernel_variant(ctx, 2, mvl, nvl, last_k=True)
 
 
 def kernel_m3_last_k(ctx, mvl, nvl):
-    return _emit_kernel_variant(ctx, 3, mvl, nvl, last_k=True)
+    return _gen_kernel_variant(ctx, 3, mvl, nvl, last_k=True)
 
 
 def kernel_ldnt1d_m0(ctx, mvl, nvl):
-    return _emit_kernel_variant(ctx, 0, mvl, nvl, load_inst=_kernel_load_inst(ctx))
+    return _gen_kernel_variant(ctx, 0, mvl, nvl, load_inst=_kernel_load_inst(ctx))
 
 
 def kernel_ldnt1d_m1(ctx, mvl, nvl):
-    return _emit_kernel_variant(ctx, 1, mvl, nvl, load_inst=_kernel_load_inst(ctx))
+    return _gen_kernel_variant(ctx, 1, mvl, nvl, load_inst=_kernel_load_inst(ctx))
 
 
 def kernel_ldnt1d_m2(ctx, mvl, nvl):
-    return _emit_kernel_variant(ctx, 2, mvl, nvl, load_inst=_kernel_load_inst(ctx))
+    return _gen_kernel_variant(ctx, 2, mvl, nvl, load_inst=_kernel_load_inst(ctx))
 
 
 def kernel_ldnt1d_m3(ctx, mvl, nvl):
-    return _emit_kernel_variant(ctx, 3, mvl, nvl, load_inst=_kernel_load_inst(ctx))
+    return _gen_kernel_variant(ctx, 3, mvl, nvl, load_inst=_kernel_load_inst(ctx))
 
 
 def kernel_bc(ctx, mvl, nvl):
-    return _emit_kernel_bc(ctx, mvl, nvl)
+    return _gen_kernel_bc(ctx, mvl, nvl)
 
 
 def kernel_ldntb_bc(ctx, mvl, nvl):
-    return _emit_kernel_bc(ctx, mvl, nvl, load_inst=_kernel_load_inst(ctx))
+    return _gen_kernel_bc(ctx, mvl, nvl, load_inst=_kernel_load_inst(ctx))

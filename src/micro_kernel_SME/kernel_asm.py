@@ -33,7 +33,7 @@ def _pointer_update(ctx, ptr_name):
     return f"add          {live_ptr}, {update_base}, {offset}, LSL #{get_element_size_shift(ctx)}\n"
 
 
-def _emit_load(ctx, op, regs_a, regs_b, load_inst, lda_inst, last_k):
+def _gen_load(ctx, op, regs_a, regs_b, load_inst, lda_inst, last_k):
     model = ctx.model
     if op["kind"] == "load_ab":
         load_fn = model.load_a0b0_last_k if last_k else model.load_a0b0
@@ -73,7 +73,7 @@ def _emit_load(ctx, op, regs_a, regs_b, load_inst, lda_inst, last_k):
     return load_fn(ctx, regs[reg_idx], op["role"], load_inst, lda_inst, next_reg, op.get("next_role"))
 
 
-def _emit_mopa(ctx, op, regs_a, regs_b):
+def _gen_mopa(ctx, op, regs_a, regs_b):
     lhs_pred = ctx.registers.ext_predicate(op["m_role"]) if ctx.is_ext_precision() else ctx.registers.logical_predicate(op["m_role"])
     rhs_pred = ctx.registers.ext_predicate(op["n_role"]) if ctx.is_ext_precision() else ctx.registers.logical_predicate(op["n_role"])
     return (
@@ -83,7 +83,7 @@ def _emit_mopa(ctx, op, regs_a, regs_b):
     )
 
 
-def _emit_kernel(ctx, plan, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
+def _gen_kernel(ctx, plan, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
     load_inst = _resolve_load_inst(ctx, ldopt)
     lda_inst = _resolve_load_inst(ctx, ldaopt)
     regs_a = [a0, a1, a2, a3]
@@ -92,9 +92,9 @@ def _emit_kernel(ctx, plan, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, 
 
     for op in plan:
         if op["kind"] in ("load_ab", "a", "b"):
-            code_parts.append(_emit_load(ctx, op, regs_a, regs_b, load_inst, lda_inst, last_k))
+            code_parts.append(_gen_load(ctx, op, regs_a, regs_b, load_inst, lda_inst, last_k))
         elif op["kind"] == "mopa":
-            code_parts.append(_emit_mopa(ctx, op, regs_a, regs_b))
+            code_parts.append(_gen_mopa(ctx, op, regs_a, regs_b))
         elif op["kind"] == "update":
             code_parts.append(_pointer_update(ctx, op["ptr"]))
 
@@ -373,7 +373,7 @@ def _side_is_contiguous(ctx, side):
     return getattr(config, attr, None) == "contiguous"
 
 
-def _emit_axis_plan_select(ctx, side, threshold, partial_code, full_code):
+def _gen_axis_plan_select(ctx, side, threshold, partial_code, full_code):
     # A single contiguous side can be upgraded from safe -> paired when the
     # remaining logical axis is wide enough to cover the whole chunk.
     fast_label = _new_kernel_label(f"{side}_full")
@@ -389,7 +389,7 @@ def _emit_axis_plan_select(ctx, side, threshold, partial_code, full_code):
     return code_str
 
 
-def _emit_dual_axis_plan_select(ctx, m_threshold, n_threshold, safe_code, a_code, b_code, both_code):
+def _gen_dual_axis_plan_select(ctx, m_threshold, n_threshold, safe_code, a_code, b_code, both_code):
     # `2VL x 2VL` is the only small shape where both axes may independently
     # become pairable. Check the M and N remainder counts separately so mixed
     # exact/tail tiles can still use a one-sided paired plan.
@@ -420,13 +420,13 @@ def _emit_dual_axis_plan_select(ctx, m_threshold, n_threshold, safe_code, a_code
     return code_str
 
 
-def _emit_plan_code(ctx, key, last_k, plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_kernel(ctx, plan, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def _gen_plan_code(ctx, key, last_k, plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
+    return _gen_kernel(ctx, plan, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def _emit_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
+def _gen_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
     safe_plan = _build_small_plan_variant(key, last_k)
-    safe_code = _emit_plan_code(ctx, key, last_k, safe_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    safe_code = _gen_plan_code(ctx, key, last_k, safe_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
     if last_k or not (ctx.is_ext_precision() and ctx.use_ext_paired_fast_path()):
         return safe_code
@@ -447,8 +447,8 @@ def _emit_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=
         if not b_pairs:
             return safe_code
         full_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs)
-        full_code = _emit_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-        return _emit_axis_plan_select(ctx, "b", tile_size_from_vl(2), safe_code, full_code)
+        full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        return _gen_axis_plan_select(ctx, "b", tile_size_from_vl(2), safe_code, full_code)
 
     if key == "2VL_1VL":
         if not a_contig:
@@ -457,8 +457,8 @@ def _emit_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=
         if not a_pairs:
             return safe_code
         full_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs)
-        full_code = _emit_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-        return _emit_axis_plan_select(ctx, "a", tile_size_from_vl(2), safe_code, full_code)
+        full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        return _gen_axis_plan_select(ctx, "a", tile_size_from_vl(2), safe_code, full_code)
 
     if key == "1VL_3VL":
         if not b_contig:
@@ -467,7 +467,7 @@ def _emit_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=
         if not b_pairs:
             return safe_code
         hybrid_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs)
-        return _emit_plan_code(ctx, key, last_k, hybrid_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        return _gen_plan_code(ctx, key, last_k, hybrid_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
     if key == "3VL_1VL":
         if not a_contig:
@@ -476,7 +476,7 @@ def _emit_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=
         if not a_pairs:
             return safe_code
         hybrid_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs)
-        return _emit_plan_code(ctx, key, last_k, hybrid_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        return _gen_plan_code(ctx, key, last_k, hybrid_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
     if key == "1VL_4VL":
         if not b_contig:
@@ -485,13 +485,13 @@ def _emit_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=
         if not hybrid_pairs:
             return safe_code
         hybrid_plan = _build_small_plan_variant(key, last_k, b_pairs=hybrid_pairs)
-        hybrid_code = _emit_plan_code(ctx, key, last_k, hybrid_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        hybrid_code = _gen_plan_code(ctx, key, last_k, hybrid_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
         full_pairs = _full_pair_specs("b", n_vl)
         if full_pairs == hybrid_pairs:
             return hybrid_code
         full_plan = _build_small_plan_variant(key, last_k, b_pairs=full_pairs)
-        full_code = _emit_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-        return _emit_axis_plan_select(ctx, "b", tile_size_from_vl(4), hybrid_code, full_code)
+        full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        return _gen_axis_plan_select(ctx, "b", tile_size_from_vl(4), hybrid_code, full_code)
 
     if key == "4VL_1VL":
         if not a_contig:
@@ -500,13 +500,13 @@ def _emit_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=
         if not hybrid_pairs:
             return safe_code
         hybrid_plan = _build_small_plan_variant(key, last_k, a_pairs=hybrid_pairs)
-        hybrid_code = _emit_plan_code(ctx, key, last_k, hybrid_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        hybrid_code = _gen_plan_code(ctx, key, last_k, hybrid_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
         full_pairs = _full_pair_specs("a", m_vl)
         if full_pairs == hybrid_pairs:
             return hybrid_code
         full_plan = _build_small_plan_variant(key, last_k, a_pairs=full_pairs)
-        full_code = _emit_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-        return _emit_axis_plan_select(ctx, "a", tile_size_from_vl(4), hybrid_code, full_code)
+        full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        return _gen_axis_plan_select(ctx, "a", tile_size_from_vl(4), hybrid_code, full_code)
 
     if key == "2VL_2VL":
         if a_contig and b_contig:
@@ -519,12 +519,12 @@ def _emit_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=
                 return safe_code
             if a_pairs and not b_pairs:
                 full_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs)
-                full_code = _emit_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-                return _emit_axis_plan_select(ctx, "a", tile_size_from_vl(2), safe_code, full_code)
+                full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+                return _gen_axis_plan_select(ctx, "a", tile_size_from_vl(2), safe_code, full_code)
             if b_pairs and not a_pairs:
                 full_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs)
-                full_code = _emit_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-                return _emit_axis_plan_select(ctx, "b", tile_size_from_vl(2), safe_code, full_code)
+                full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+                return _gen_axis_plan_select(ctx, "b", tile_size_from_vl(2), safe_code, full_code)
             a_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs)
             b_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs)
             both_plan = _build_small_plan_variant(
@@ -533,10 +533,10 @@ def _emit_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=
                 a_pairs=a_pairs,
                 b_pairs=b_pairs,
             )
-            a_code = _emit_plan_code(ctx, key, last_k, a_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-            b_code = _emit_plan_code(ctx, key, last_k, b_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-            both_code = _emit_plan_code(ctx, key, last_k, both_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-            return _emit_dual_axis_plan_select(
+            a_code = _gen_plan_code(ctx, key, last_k, a_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+            b_code = _gen_plan_code(ctx, key, last_k, b_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+            both_code = _gen_plan_code(ctx, key, last_k, both_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+            return _gen_dual_axis_plan_select(
                 ctx,
                 tile_size_from_vl(2),
                 tile_size_from_vl(2),
@@ -550,81 +550,81 @@ def _emit_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=
             if not a_pairs:
                 return safe_code
             full_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs)
-            full_code = _emit_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-            return _emit_axis_plan_select(ctx, "a", tile_size_from_vl(2), safe_code, full_code)
+            full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+            return _gen_axis_plan_select(ctx, "a", tile_size_from_vl(2), safe_code, full_code)
         if b_contig:
             b_pairs = _full_pair_specs("b", n_vl)
             if not b_pairs:
                 return safe_code
             full_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs)
-            full_code = _emit_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-            return _emit_axis_plan_select(ctx, "b", tile_size_from_vl(2), safe_code, full_code)
+            full_code = _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+            return _gen_axis_plan_select(ctx, "b", tile_size_from_vl(2), safe_code, full_code)
 
     return safe_code
 
 
 def kernel_4VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "4VL_1VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "4VL_1VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_4VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "1VL_4VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "1VL_4VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_3VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "3VL_1VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "3VL_1VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_3VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "1VL_3VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "1VL_3VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_2VL_2VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "2VL_2VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "2VL_2VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_2VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "1VL_2VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "1VL_2VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_2VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "2VL_1VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "2VL_1VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "1VL_1VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "1VL_1VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_4VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "4VL_1VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "4VL_1VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_4VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "1VL_4VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "1VL_4VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_3VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "3VL_1VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "3VL_1VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_3VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "1VL_3VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "1VL_3VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_2VL_2VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "2VL_2VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "2VL_2VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_2VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "1VL_2VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "1VL_2VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_2VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "2VL_1VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "2VL_1VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def kernel_1VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _emit_active_kernel(ctx, "1VL_1VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+    return _gen_active_kernel(ctx, "1VL_1VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def save_zacol(pc, off, za, base_idx, idx, pg, rab0, rc0):

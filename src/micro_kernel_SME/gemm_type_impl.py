@@ -74,7 +74,7 @@ def _scaled_add(dst, base, offset, lane):
     return code_str
 
 
-def _emit_zip_pair(dst0, dst1, low_tmp, high_tmp):
+def _gen_zip_pair(dst0, dst1, low_tmp, high_tmp):
     # Some paired paths reuse one temporary as the first destination. Emit
     # `zip2` first in that overlap case so the source value survives long enough
     # for the matching `zip1`.
@@ -89,7 +89,7 @@ def _emit_zip_pair(dst0, dst1, low_tmp, high_tmp):
     return code_str
 
 
-def _emit_ext_contiguous_head(ctx, base, stride, tmp_base, role, dst, low_tmp, high_tmp):
+def _gen_ext_contiguous_head(ctx, base, stride, tmp_base, role, dst, low_tmp, high_tmp):
     pred = _pred(ctx, role)
     code_str = f""
     code_str += _zip_ext_predicate(ctx, role)
@@ -100,7 +100,7 @@ def _emit_ext_contiguous_head(ctx, base, stride, tmp_base, role, dst, low_tmp, h
     return code_str
 
 
-def _emit_ext_contiguous_head_pair_fast(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
+def _gen_ext_contiguous_head_pair_fast(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
     code_str = f""
     pred_pre, pred, pred_post = _fast_pair_predicate(ctx, role0, role1)
     code_str += pred_pre
@@ -108,29 +108,29 @@ def _emit_ext_contiguous_head_pair_fast(ctx, base, stride, tmp_base, role0, role
     code_str += f"add       {tmp_base}, {base}, {stride}, LSL #1\n"
     code_str += f"ld1h      {high_tmp}.h, {pred}/z, [{tmp_base}]\n"
     code_str += pred_post
-    code_str += _emit_zip_pair(dst0, dst1, low_tmp, high_tmp)
+    code_str += _gen_zip_pair(dst0, dst1, low_tmp, high_tmp)
     return code_str
 
 
-def _emit_ext_contiguous_head_pair_safe(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
-    code_str = _emit_ext_contiguous_head(ctx, base, stride, tmp_base, role0, dst0, low_tmp, high_tmp)
-    code_str += _emit_ext_contiguous_lane(ctx, base, tmp_base, role1, dst1, 1, low_tmp, high_tmp)
+def _gen_ext_contiguous_head_pair_safe(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
+    code_str = _gen_ext_contiguous_head(ctx, base, stride, tmp_base, role0, dst0, low_tmp, high_tmp)
+    code_str += _gen_ext_contiguous_lane(ctx, base, tmp_base, role1, dst1, 1, low_tmp, high_tmp)
     return code_str
 
 
-def _emit_ext_contiguous_head_pair(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
+def _gen_ext_contiguous_head_pair(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
     if role0 == role1:
-        return _emit_ext_contiguous_head_pair_fast(
+        return _gen_ext_contiguous_head_pair_fast(
             ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp
         )
     # Mixed-role head pairs are intentionally kept on the safe path. The plan
     # layer only upgrades same-role chunks to paired execution.
-    return _emit_ext_contiguous_head_pair_safe(
+    return _gen_ext_contiguous_head_pair_safe(
         ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp
     )
 
 
-def _emit_ext_contiguous_lane_fast_pair(ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None):
+def _gen_ext_contiguous_lane_fast_pair(ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None):
     code_str = f""
     pred_pre, pred, pred_post = _fast_pair_predicate(ctx, role, next_role if next_dst is not None else None)
     code_str += pred_pre
@@ -138,17 +138,17 @@ def _emit_ext_contiguous_lane_fast_pair(ctx, base, paired_base, role, dst, lane,
     code_str += f"ld1h      {low_tmp}.h, {pred}/z, [{base}, {ctx.registers.address.TMP_PTR2}, LSL #1]\n"
     code_str += f"ld1h      {high_tmp}.h, {pred}/z, [{paired_base}, {ctx.registers.address.TMP_PTR2}, LSL #1]\n"
     code_str += pred_post
-    code_str += _emit_zip_pair(dst, next_dst, low_tmp, high_tmp)
+    code_str += _gen_zip_pair(dst, next_dst, low_tmp, high_tmp)
     return code_str
 
 
-def _emit_ext_contiguous_lane_pair_safe(ctx, base, paired_base, role0, role1, dst0, dst1, lane, low_tmp, high_tmp):
-    code_str = _emit_ext_contiguous_lane(ctx, base, paired_base, role0, dst0, lane, low_tmp, high_tmp)
-    code_str += _emit_ext_contiguous_lane(ctx, base, paired_base, role1, dst1, lane + 1, low_tmp, high_tmp)
+def _gen_ext_contiguous_lane_pair_safe(ctx, base, paired_base, role0, role1, dst0, dst1, lane, low_tmp, high_tmp):
+    code_str = _gen_ext_contiguous_lane(ctx, base, paired_base, role0, dst0, lane, low_tmp, high_tmp)
+    code_str += _gen_ext_contiguous_lane(ctx, base, paired_base, role1, dst1, lane + 1, low_tmp, high_tmp)
     return code_str
 
 
-def _emit_ext_contiguous_lane(ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None):
+def _gen_ext_contiguous_lane(ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None):
     if next_dst is None:
         pred = _pred(ctx, role)
         code_str = f""
@@ -161,15 +161,15 @@ def _emit_ext_contiguous_lane(ctx, base, paired_base, role, dst, lane, low_tmp, 
     if next_dst is not None and next_role != role:
         # `main + tail` and other mixed-role lane pairs are stable only as two
         # independent loads. Keep them out of the paired fast path.
-        return _emit_ext_contiguous_lane_pair_safe(
+        return _gen_ext_contiguous_lane_pair_safe(
             ctx, base, paired_base, role, next_role, dst, next_dst, lane, low_tmp, high_tmp
         )
-    return _emit_ext_contiguous_lane_fast_pair(
+    return _gen_ext_contiguous_lane_fast_pair(
         ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=next_dst, next_role=next_role
     )
 
 
-def _emit_ext_contiguous_last_k_fast_pair(ctx, base, role, dst, lane, low_tmp, zero_tmp, next_dst=None, next_role=None):
+def _gen_ext_contiguous_last_k_fast_pair(ctx, base, role, dst, lane, low_tmp, zero_tmp, next_dst=None, next_role=None):
     code_str = f""
     pred_pre, pred, pred_post = _paired_ext_predicate(ctx, role, next_role if next_dst is not None else None)
     code_str += pred_pre
@@ -186,13 +186,13 @@ def _emit_ext_contiguous_last_k_fast_pair(ctx, base, role, dst, lane, low_tmp, z
     return code_str
 
 
-def _emit_ext_contiguous_last_k_pair_safe(ctx, base, role0, role1, dst0, dst1, lane, low_tmp, zero_tmp):
-    code_str = _emit_ext_contiguous_last_k(ctx, base, role0, dst0, lane, low_tmp, zero_tmp)
-    code_str += _emit_ext_contiguous_last_k(ctx, base, role1, dst1, lane + 1, low_tmp, zero_tmp)
+def _gen_ext_contiguous_last_k_pair_safe(ctx, base, role0, role1, dst0, dst1, lane, low_tmp, zero_tmp):
+    code_str = _gen_ext_contiguous_last_k(ctx, base, role0, dst0, lane, low_tmp, zero_tmp)
+    code_str += _gen_ext_contiguous_last_k(ctx, base, role1, dst1, lane + 1, low_tmp, zero_tmp)
     return code_str
 
 
-def _emit_ext_contiguous_last_k(ctx, base, role, dst, lane, low_tmp, zero_tmp, next_dst=None, next_role=None):
+def _gen_ext_contiguous_last_k(ctx, base, role, dst, lane, low_tmp, zero_tmp, next_dst=None, next_role=None):
     if next_dst is None:
         pred = _pred(ctx, role)
         code_str = f""
@@ -206,15 +206,15 @@ def _emit_ext_contiguous_last_k(ctx, base, role, dst, lane, low_tmp, zero_tmp, n
         code_str += f"zip1      {dst}.h, {low_tmp}.h, {zero_tmp}.h\n"
         return code_str
     if next_dst is not None and next_role != role:
-        return _emit_ext_contiguous_last_k_pair_safe(
+        return _gen_ext_contiguous_last_k_pair_safe(
             ctx, base, role, next_role, dst, next_dst, lane, low_tmp, zero_tmp
         )
-    return _emit_ext_contiguous_last_k_fast_pair(
+    return _gen_ext_contiguous_last_k_fast_pair(
         ctx, base, role, dst, lane, low_tmp, zero_tmp, next_dst=next_dst, next_role=next_role
     )
 
 
-def _emit_non_ext_contiguous(load_inst, ctx, base, role, dst, lane):
+def _gen_non_ext_contiguous(load_inst, ctx, base, role, dst, lane):
     suffix = get_ld_element_suffix(ctx)
     pred = _load_predicate(ctx, role)
     if lane == 0:
@@ -222,7 +222,7 @@ def _emit_non_ext_contiguous(load_inst, ctx, base, role, dst, lane):
     return f"{load_inst}      {dst}{suffix}, {pred}, [{base}, #{lane}, MUL VL]\n"
 
 
-def _emit_ext_gather_pair(ctx, base, role, index_vec, dst, low_tmp, high_tmp, pair_base, next_dst=None, next_role=None):
+def _gen_ext_gather_pair(ctx, base, role, index_vec, dst, low_tmp, high_tmp, pair_base, next_dst=None, next_role=None):
     if next_dst is None:
         code_str = f""
         code_str += _zip_ext_predicate(ctx, role)
@@ -256,7 +256,7 @@ def _emit_ext_gather_pair(ctx, base, role, index_vec, dst, low_tmp, high_tmp, pa
     return code_str
 
 
-def _emit_ext_gather_last_k(ctx, base, role, index_vec, dst, low_tmp, zero_tmp, next_dst=None, next_role=None):
+def _gen_ext_gather_last_k(ctx, base, role, index_vec, dst, low_tmp, zero_tmp, next_dst=None, next_role=None):
     if next_dst is None:
         return (
             _zip_ext_predicate(ctx, role)
@@ -280,18 +280,18 @@ def _emit_ext_gather_last_k(ctx, base, role, index_vec, dst, low_tmp, zero_tmp, 
     return code_str
 
 
-def _emit_non_ext_gather(load_inst, ctx, base, role, index_vec, dst):
+def _gen_non_ext_gather(load_inst, ctx, base, role, index_vec, dst):
     suffix = get_ld_element_suffix(ctx)
     pred = _load_predicate(ctx, role)
     return f"{load_inst}      {dst}{suffix}, {pred}, [{base}, {index_vec}.s, UXTW]\n"
 
 
-def _emit_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None):
+def _gen_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None):
     regs = ctx.registers
     if config.a_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
             if ctx.use_ext_paired_fast_path() and next_dst is not None:
-                return _emit_ext_contiguous_head_pair(
+                return _gen_ext_contiguous_head_pair(
                     ctx,
                     regs.pointers.pA0,
                     regs.params.LDA,
@@ -303,7 +303,7 @@ def _emit_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None):
                     regs.vectors.a_low,
                     regs.vectors.pair_high,
                 )
-            return _emit_ext_contiguous_head(
+            return _gen_ext_contiguous_head(
                 ctx,
                 regs.pointers.pA0,
                 regs.params.LDA,
@@ -313,12 +313,12 @@ def _emit_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None):
                 regs.vectors.a_low,
                 regs.vectors.pair_high,
             )
-        return _emit_non_ext_contiguous(ldaopt, ctx, regs.pointers.pA0, role, a0, 0)
+        return _gen_non_ext_contiguous(ldaopt, ctx, regs.pointers.pA0, role, a0, 0)
     if ctx.is_ext_precision():
         # Gather-based paths stay conservative in the unified scheme. They still
         # use zip/uzp shaping internally, but they do not participate in the
         # small-kernel paired fast path.
-        return _emit_ext_gather_pair(
+        return _gen_ext_gather_pair(
             ctx,
             regs.pointers.pA0,
             role,
@@ -328,15 +328,15 @@ def _emit_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None):
             regs.vectors.pair_high,
             regs.address.TMP_PTR,
         )
-    return _emit_non_ext_gather(ldaopt, ctx, regs.pointers.pA0, role, regs.vectors.a_index, a0)
+    return _gen_non_ext_gather(ldaopt, ctx, regs.pointers.pA0, role, regs.vectors.a_index, a0)
 
 
-def _emit_b_head(ctx, config, b0, role, ldopt, next_dst=None, next_role=None):
+def _gen_b_head(ctx, config, b0, role, ldopt, next_dst=None, next_role=None):
     regs = ctx.registers
     if config.b_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
             if ctx.use_ext_paired_fast_path() and next_dst is not None:
-                return _emit_ext_contiguous_head_pair(
+                return _gen_ext_contiguous_head_pair(
                     ctx,
                     regs.pointers.pB0,
                     regs.params.LDB,
@@ -348,7 +348,7 @@ def _emit_b_head(ctx, config, b0, role, ldopt, next_dst=None, next_role=None):
                     config.b_low_tmp,
                     config.b_high_tmp,
                 )
-            return _emit_ext_contiguous_head(
+            return _gen_ext_contiguous_head(
                 ctx,
                 regs.pointers.pB0,
                 regs.params.LDB,
@@ -358,9 +358,9 @@ def _emit_b_head(ctx, config, b0, role, ldopt, next_dst=None, next_role=None):
                 config.b_low_tmp,
                 config.b_high_tmp,
             )
-        return _emit_non_ext_contiguous(ldopt, ctx, regs.pointers.pB0, role, b0, 0)
+        return _gen_non_ext_contiguous(ldopt, ctx, regs.pointers.pB0, role, b0, 0)
     if ctx.is_ext_precision():
-        return _emit_ext_gather_pair(
+        return _gen_ext_gather_pair(
             ctx,
             regs.pointers.pB0,
             role,
@@ -370,10 +370,10 @@ def _emit_b_head(ctx, config, b0, role, ldopt, next_dst=None, next_role=None):
             config.b_high_tmp,
             regs.address.TMP_PTR1,
         )
-    return _emit_non_ext_gather(ldopt, ctx, regs.pointers.pB0, role, regs.vectors.b_index, b0)
+    return _gen_non_ext_gather(ldopt, ctx, regs.pointers.pB0, role, regs.vectors.b_index, b0)
 
 
-def _emit_gather_base_setup(target, registers, lane, is_a):
+def _gen_gather_base_setup(target, registers, lane, is_a):
     if lane == 0:
         return ""
     base = registers.pointers.pA0 if is_a else registers.pointers.pB0
@@ -387,10 +387,10 @@ def _gather_base_register(registers, lane, is_a):
     return registers.pointers.pAn if is_a else registers.pointers.pBn
 
 
-def _emit_a_last_k(ctx, config, a_reg, role, lane, next_reg=None, next_role=None):
+def _gen_a_last_k(ctx, config, a_reg, role, lane, next_reg=None, next_role=None):
     regs = ctx.registers
     if config.a_mode == LOAD_CONTIGUOUS:
-        return _emit_ext_contiguous_last_k(
+        return _gen_ext_contiguous_last_k(
             ctx,
             regs.pointers.pA0,
             role,
@@ -399,8 +399,8 @@ def _emit_a_last_k(ctx, config, a_reg, role, lane, next_reg=None, next_role=None
             regs.vectors.a_low,
             regs.vectors.pair_high,
         )
-    code_str = _emit_gather_base_setup(regs.pointers.pAn, regs, lane, True)
-    code_str += _emit_ext_gather_last_k(
+    code_str = _gen_gather_base_setup(regs.pointers.pAn, regs, lane, True)
+    code_str += _gen_ext_gather_last_k(
         ctx,
         _gather_base_register(regs, lane, True),
         role,
@@ -412,10 +412,10 @@ def _emit_a_last_k(ctx, config, a_reg, role, lane, next_reg=None, next_role=None
     return code_str
 
 
-def _emit_b_last_k(ctx, config, b_reg, role, lane, next_reg=None, next_role=None):
+def _gen_b_last_k(ctx, config, b_reg, role, lane, next_reg=None, next_role=None):
     regs = ctx.registers
     if config.b_mode == LOAD_CONTIGUOUS:
-        return _emit_ext_contiguous_last_k(
+        return _gen_ext_contiguous_last_k(
             ctx,
             regs.pointers.pB0,
             role,
@@ -424,8 +424,8 @@ def _emit_b_last_k(ctx, config, b_reg, role, lane, next_reg=None, next_role=None
             config.b_low_tmp,
             config.b_high_tmp,
         )
-    code_str = _emit_gather_base_setup(regs.pointers.pBn, regs, lane, False)
-    code_str += _emit_ext_gather_last_k(
+    code_str = _gen_gather_base_setup(regs.pointers.pBn, regs, lane, False)
+    code_str += _gen_ext_gather_last_k(
         ctx,
         _gather_base_register(regs, lane, False),
         role,
@@ -437,15 +437,15 @@ def _emit_b_last_k(ctx, config, b_reg, role, lane, next_reg=None, next_role=None
     return code_str
 
 
-def _emit_gather_base(target, registers, lane, is_a):
-    return _emit_gather_base_setup(target, registers, lane, is_a)
+def _gen_gather_base(target, registers, lane, is_a):
+    return _gen_gather_base_setup(target, registers, lane, is_a)
 
 
-def _emit_a_lane(ctx, config, dst, role, lane, ldaopt, next_dst=None, next_role=None):
+def _gen_a_lane(ctx, config, dst, role, lane, ldaopt, next_dst=None, next_role=None):
     regs = ctx.registers
     if config.a_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
-            return _emit_ext_contiguous_lane(
+            return _gen_ext_contiguous_lane(
                 ctx,
                 regs.pointers.pA0,
                 regs.address.TMP_PTR,
@@ -457,11 +457,11 @@ def _emit_a_lane(ctx, config, dst, role, lane, ldaopt, next_dst=None, next_role=
                 next_dst=next_dst if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
                 next_role=next_role,
             )
-        return _emit_non_ext_contiguous(ldaopt, ctx, regs.pointers.pA0, role, dst, lane)
+        return _gen_non_ext_contiguous(ldaopt, ctx, regs.pointers.pA0, role, dst, lane)
 
-    code_str = _emit_gather_base(regs.pointers.pAn, regs, lane, True)
+    code_str = _gen_gather_base(regs.pointers.pAn, regs, lane, True)
     if ctx.is_ext_precision():
-        code_str += _emit_ext_gather_pair(
+        code_str += _gen_ext_gather_pair(
             ctx,
             regs.pointers.pAn,
             role,
@@ -472,15 +472,15 @@ def _emit_a_lane(ctx, config, dst, role, lane, ldaopt, next_dst=None, next_role=
             regs.address.TMP_PTR2,
         )
         return code_str
-    code_str += _emit_non_ext_gather(ldaopt, ctx, regs.pointers.pAn, role, regs.vectors.a_index, dst)
+    code_str += _gen_non_ext_gather(ldaopt, ctx, regs.pointers.pAn, role, regs.vectors.a_index, dst)
     return code_str
 
 
-def _emit_b_lane(ctx, config, dst, role, lane, ldopt, next_dst=None, next_role=None):
+def _gen_b_lane(ctx, config, dst, role, lane, ldopt, next_dst=None, next_role=None):
     regs = ctx.registers
     if config.b_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
-            return _emit_ext_contiguous_lane(
+            return _gen_ext_contiguous_lane(
                 ctx,
                 regs.pointers.pB0,
                 regs.address.TMP_PTR1,
@@ -492,11 +492,11 @@ def _emit_b_lane(ctx, config, dst, role, lane, ldopt, next_dst=None, next_role=N
                 next_dst=next_dst if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
                 next_role=next_role,
             )
-        return _emit_non_ext_contiguous(ldopt, ctx, regs.pointers.pB0, role, dst, lane)
+        return _gen_non_ext_contiguous(ldopt, ctx, regs.pointers.pB0, role, dst, lane)
 
-    code_str = _emit_gather_base(regs.pointers.pBn, regs, lane, False)
+    code_str = _gen_gather_base(regs.pointers.pBn, regs, lane, False)
     if ctx.is_ext_precision():
-        code_str += _emit_ext_gather_pair(
+        code_str += _gen_ext_gather_pair(
             ctx,
             regs.pointers.pBn,
             role,
@@ -507,11 +507,11 @@ def _emit_b_lane(ctx, config, dst, role, lane, ldopt, next_dst=None, next_role=N
             regs.address.TMP_PTR2,
         )
         return code_str
-    code_str += _emit_non_ext_gather(ldopt, ctx, regs.pointers.pBn, role, regs.vectors.b_index, dst)
+    code_str += _gen_non_ext_gather(ldopt, ctx, regs.pointers.pBn, role, regs.vectors.b_index, dst)
     return code_str
 
 
-def _emit_small_svindex(ctx, config):
+def _gen_small_svindex(ctx, config):
     regs = ctx.registers
     shift = get_element_size_shift(ctx)
     code_str = f""
@@ -526,7 +526,7 @@ def _emit_small_svindex(ctx, config):
     return code_str
 
 
-def _emit_small_n_pre(ctx):
+def _gen_small_n_pre(ctx):
     regs = ctx.registers
     code_str = f""
     code_str += f"mov     {regs.pointers.pAt}, {regs.params.origPA}\n"
@@ -534,7 +534,7 @@ def _emit_small_n_pre(ctx):
     return code_str
 
 
-def _emit_small_n_post(ctx, config):
+def _gen_small_n_post(ctx, config):
     regs = ctx.registers
     shift = get_element_size_shift(ctx)
     if config.b_mode == LOAD_GATHER:
@@ -545,7 +545,7 @@ def _emit_small_n_post(ctx, config):
     return f"add     {regs.pointers.pBt}, {regs.pointers.pBt}, {regs.dims.MIN_N}, lsl #{shift}\n"
 
 
-def _emit_small_m_pre(ctx, config):
+def _gen_small_m_pre(ctx, config):
     regs = ctx.registers
     shift = get_element_size_shift(ctx)
     code_str = f""
@@ -564,7 +564,7 @@ def _emit_small_m_pre(ctx, config):
     return code_str
 
 
-def _emit_small_m_post(ctx, config):
+def _gen_small_m_post(ctx, config):
     regs = ctx.registers
     shift = get_element_size_shift(ctx)
     if config.a_mode == LOAD_GATHER:
@@ -593,65 +593,65 @@ class SmallGemmModel:
     # contiguous or gather-backed on each side.
 
     def load_a0b0(self, ctx, a0, a_role, b0, b_role, ldopt, ldaopt, a1=None, b1=None, a1_role=None, b1_role=None):
-        code_str = _emit_a_head(ctx, self.config, a0, a_role, ldaopt, next_dst=a1, next_role=a1_role)
-        code_str += _emit_b_head(ctx, self.config, b0, b_role, ldopt, next_dst=b1, next_role=b1_role)
+        code_str = _gen_a_head(ctx, self.config, a0, a_role, ldaopt, next_dst=a1, next_role=a1_role)
+        code_str += _gen_b_head(ctx, self.config, b0, b_role, ldopt, next_dst=b1, next_role=b1_role)
         return code_str
 
     def load_a0b0_last_k(self, ctx, a0, a_role, b0, b_role, ldopt, ldaopt, a1=None, b1=None, a1_role=None, b1_role=None):
-        code_str = _emit_a_last_k(ctx, self.config, a0, a_role, 0, next_reg=a1, next_role=a1_role)
-        code_str += _emit_b_last_k(ctx, self.config, b0, b_role, 0, next_reg=b1, next_role=b1_role)
+        code_str = _gen_a_last_k(ctx, self.config, a0, a_role, 0, next_reg=a1, next_role=a1_role)
+        code_str += _gen_b_last_k(ctx, self.config, b0, b_role, 0, next_reg=b1, next_role=b1_role)
         return code_str
 
     def load_a1(self, ctx, a1, role, ldopt, ldaopt, a2=None, a2_role=None):
-        return _emit_a_lane(ctx, self.config, a1, role, 1, ldaopt, next_dst=a2, next_role=a2_role)
+        return _gen_a_lane(ctx, self.config, a1, role, 1, ldaopt, next_dst=a2, next_role=a2_role)
 
     def load_a1_last_k(self, ctx, a1, role, ldopt, ldaopt, a2=None, a2_role=None):
-        return _emit_a_last_k(ctx, self.config, a1, role, 1, next_reg=a2, next_role=a2_role)
+        return _gen_a_last_k(ctx, self.config, a1, role, 1, next_reg=a2, next_role=a2_role)
 
     def load_a2(self, ctx, a2, role, ldopt, ldaopt, a3=None, a3_role=None):
-        return _emit_a_lane(ctx, self.config, a2, role, 2, ldaopt, next_dst=a3, next_role=a3_role)
+        return _gen_a_lane(ctx, self.config, a2, role, 2, ldaopt, next_dst=a3, next_role=a3_role)
 
     def load_a2_last_k(self, ctx, a2, role, ldopt, ldaopt, a3=None, a3_role=None):
-        return _emit_a_last_k(ctx, self.config, a2, role, 2, next_reg=a3, next_role=a3_role)
+        return _gen_a_last_k(ctx, self.config, a2, role, 2, next_reg=a3, next_role=a3_role)
 
     def load_a3(self, ctx, a3, role, ldopt, ldaopt, a4=None):
-        return _emit_a_lane(ctx, self.config, a3, role, 3, ldaopt)
+        return _gen_a_lane(ctx, self.config, a3, role, 3, ldaopt)
 
     def load_a3_last_k(self, ctx, a3, role, ldopt, ldaopt, a4=None):
-        return _emit_a_last_k(ctx, self.config, a3, role, 3)
+        return _gen_a_last_k(ctx, self.config, a3, role, 3)
 
     def load_b1(self, ctx, b1, role, ldopt, ldaopt, b2=None, b2_role=None):
-        return _emit_b_lane(ctx, self.config, b1, role, 1, ldopt, next_dst=b2, next_role=b2_role)
+        return _gen_b_lane(ctx, self.config, b1, role, 1, ldopt, next_dst=b2, next_role=b2_role)
 
     def load_b1_last_k(self, ctx, b1, role, ldopt, ldaopt, b2=None, b2_role=None):
-        return _emit_b_last_k(ctx, self.config, b1, role, 1, next_reg=b2, next_role=b2_role)
+        return _gen_b_last_k(ctx, self.config, b1, role, 1, next_reg=b2, next_role=b2_role)
 
     def load_b2(self, ctx, b2, role, ldopt, ldaopt, b3=None, b3_role=None):
-        return _emit_b_lane(ctx, self.config, b2, role, 2, ldopt, next_dst=b3, next_role=b3_role)
+        return _gen_b_lane(ctx, self.config, b2, role, 2, ldopt, next_dst=b3, next_role=b3_role)
 
     def load_b2_last_k(self, ctx, b2, role, ldopt, ldaopt, b3=None, b3_role=None):
-        return _emit_b_last_k(ctx, self.config, b2, role, 2, next_reg=b3, next_role=b3_role)
+        return _gen_b_last_k(ctx, self.config, b2, role, 2, next_reg=b3, next_role=b3_role)
 
     def load_b3(self, ctx, b3, role, ldopt, ldaopt, b4=None):
-        return _emit_b_lane(ctx, self.config, b3, role, 3, ldopt)
+        return _gen_b_lane(ctx, self.config, b3, role, 3, ldopt)
 
     def load_b3_last_k(self, ctx, b3, role, ldopt, ldaopt, b4=None):
-        return _emit_b_last_k(ctx, self.config, b3, role, 3)
+        return _gen_b_last_k(ctx, self.config, b3, role, 3)
 
     def set_svindex(self, ctx):
-        return _emit_small_svindex(ctx, self.config)
+        return _gen_small_svindex(ctx, self.config)
 
     def kernel_mm_loop_n_pre_func(self, ctx):
-        return _emit_small_n_pre(ctx)
+        return _gen_small_n_pre(ctx)
 
     def kernel_mm_loop_n_post_func(self, ctx):
-        return _emit_small_n_post(ctx, self.config)
+        return _gen_small_n_post(ctx, self.config)
 
     def kernel_mm_loop_m_pre_func(self, ctx):
-        return _emit_small_m_pre(ctx, self.config)
+        return _gen_small_m_pre(ctx, self.config)
 
     def kernel_mm_loop_m_post_func(self, ctx):
-        return _emit_small_m_post(ctx, self.config)
+        return _gen_small_m_post(ctx, self.config)
 
 
 class GeneralGemmModel:
@@ -695,7 +695,7 @@ class GeneralGemmModel:
     def _b_high(self, ctx):
         return ctx.registers.vectors.b_high
 
-    def _emit_general_a(self, ctx, dst, role, lane, ldaopt, next_dst=None, next_role=None):
+    def _gen_general_a(self, ctx, dst, role, lane, ldaopt, next_dst=None, next_role=None):
         regs = ctx.registers
         if ctx.is_ext_precision():
             low_offset = lane * 2
@@ -716,7 +716,7 @@ class GeneralGemmModel:
             return code_str
         return f"{ldaopt}     {dst}{get_ld_element_suffix(ctx)}, {_load_predicate(ctx, role)}, [{regs.pointers.pA0}, #{lane}, MUL VL]\n"
 
-    def _emit_general_b(self, ctx, dst, role, lane, ldopt, next_dst=None, next_role=None):
+    def _gen_general_b(self, ctx, dst, role, lane, ldopt, next_dst=None, next_role=None):
         regs = ctx.registers
         if ctx.is_ext_precision():
             low_offset = lane * 2
@@ -741,37 +741,37 @@ class GeneralGemmModel:
         return self.load_a0b0(ctx, a0, a_role, b0, b_role, ldopt, ldaopt, a1=a1, b1=b1, a1_role=a1_role, b1_role=b1_role)
 
     def load_a1(self, ctx, a1, role, ldopt, ldaopt, a2=None, a2_role=None):
-        return self._emit_general_a(ctx, a1, role, 1, ldaopt, next_dst=a2, next_role=a2_role)
+        return self._gen_general_a(ctx, a1, role, 1, ldaopt, next_dst=a2, next_role=a2_role)
 
     def load_a1_last_k(self, ctx, a1, role, ldopt, ldaopt, a2=None, a2_role=None):
         return self.load_a1(ctx, a1, role, ldopt, ldaopt, a2=a2, a2_role=a2_role)
 
     def load_a2(self, ctx, a2, role, ldopt, ldaopt, a3=None, a3_role=None):
-        return self._emit_general_a(ctx, a2, role, 2, ldaopt, next_dst=a3, next_role=a3_role)
+        return self._gen_general_a(ctx, a2, role, 2, ldaopt, next_dst=a3, next_role=a3_role)
 
     def load_a2_last_k(self, ctx, a2, role, ldopt, ldaopt, a3=None, a3_role=None):
         return self.load_a2(ctx, a2, role, ldopt, ldaopt, a3=a3, a3_role=a3_role)
 
     def load_a3(self, ctx, a3, role, ldopt, ldaopt, a4=None, a4_role=None):
-        return self._emit_general_a(ctx, a3, role, 3, ldaopt)
+        return self._gen_general_a(ctx, a3, role, 3, ldaopt)
 
     def load_a3_last_k(self, ctx, a3, role, ldopt, ldaopt, a4=None, a4_role=None):
         return self.load_a3(ctx, a3, role, ldopt, ldaopt)
 
     def load_b1(self, ctx, b1, role, ldopt, ldaopt, b2=None, b2_role=None):
-        return self._emit_general_b(ctx, b1, role, 1, ldopt, next_dst=b2, next_role=b2_role)
+        return self._gen_general_b(ctx, b1, role, 1, ldopt, next_dst=b2, next_role=b2_role)
 
     def load_b1_last_k(self, ctx, b1, role, ldopt, ldaopt, b2=None, b2_role=None):
         return self.load_b1(ctx, b1, role, ldopt, ldaopt, b2=b2, b2_role=b2_role)
 
     def load_b2(self, ctx, b2, role, ldopt, ldaopt, b3=None, b3_role=None):
-        return self._emit_general_b(ctx, b2, role, 2, ldopt, next_dst=b3, next_role=b3_role)
+        return self._gen_general_b(ctx, b2, role, 2, ldopt, next_dst=b3, next_role=b3_role)
 
     def load_b2_last_k(self, ctx, b2, role, ldopt, ldaopt, b3=None, b3_role=None):
         return self.load_b2(ctx, b2, role, ldopt, ldaopt, b3=b3, b3_role=b3_role)
 
     def load_b3(self, ctx, b3, role, ldopt, ldaopt, b4=None, b4_role=None):
-        return self._emit_general_b(ctx, b3, role, 3, ldopt)
+        return self._gen_general_b(ctx, b3, role, 3, ldopt)
 
     def load_b3_last_k(self, ctx, b3, role, ldopt, ldaopt, b4=None, b4_role=None):
         return self.load_b3(ctx, b3, role, ldopt, ldaopt)

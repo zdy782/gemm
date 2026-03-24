@@ -54,14 +54,14 @@ def _save_column_configs(ctx):
     ]
 
 
-def _emit_save_base_index_init(ctx):
+def _gen_save_base_index_init(ctx):
     code_parts = []
     for reg, idx in zip(_save_base_index_regs(ctx), get_save_base_slice_indices()):
         code_parts.append(f"mov      {reg}, #{idx}\n")
     return "".join(code_parts)
 
 
-def _emit_save_column_ptr_setup(ctx):
+def _gen_save_column_ptr_setup(ctx):
     regs = ctx.registers
     ptrs = _save_column_ptrs(ctx)
     code_parts = []
@@ -169,10 +169,10 @@ def kernel_save_c_base_n_1VL_(ctx, mvl, c0="za0", c1="za1", c2="za2", c3="za3"):
 def kernel_save_c_base_n_1VL(ctx, label, mvl, nvl, c0="za0", c1="za1", c2="za2", c3="za3"):
     regs = ctx.registers
     code_str = f""
-    code_str += _emit_save_base_index_init(ctx)
+    code_str += _gen_save_base_index_init(ctx)
     code_str += f"ands     {regs.counters.TMP_CNT_POST}, {regs.dims.MIN_N}, #{get_save_tail_mask()}\n"
     code_str += f"bne      .kernel_save_c_val_{mvl}_{nvl}_{label}\n"
-    code_str += _emit_save_column_ptr_setup(ctx)
+    code_str += _gen_save_column_ptr_setup(ctx)
     code_str += kernel_save_c_base_n_1VL_(ctx, mvl, c0, c1, c2, c3)
     code_str += f"b        .kernel_save_c_val_{mvl}_{nvl}_{label}_end\n"
     code_str += f".kernel_save_c_val_{mvl}_{nvl}_{label}:\n"
@@ -184,9 +184,9 @@ def kernel_save_c_base_n_1VL(ctx, label, mvl, nvl, c0="za0", c1="za1", c2="za2",
 def _kernel_save_c_base_n_multi(ctx, label, mvl, full_groups, tail_group, tail_nvl):
     regs = ctx.registers
     code_str = f""
-    code_str += _emit_save_base_index_init(ctx)
+    code_str += _gen_save_base_index_init(ctx)
     code_str += f"mov      {regs.address.TMP_PTR}, {regs.pointers.pC0}\n"
-    code_str += _emit_save_column_ptr_setup(ctx)
+    code_str += _gen_save_column_ptr_setup(ctx)
     for za_regs in full_groups:
         code_str += kernel_save_c_base_n_1VL_(ctx, mvl, *za_regs)
     code_str += kernel_save_c_base_n_1VL(ctx, label, mvl, tail_nvl, *tail_group)

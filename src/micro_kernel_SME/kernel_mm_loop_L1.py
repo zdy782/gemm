@@ -7,14 +7,14 @@ from kernel_mm_loop_L2 import kernel_mm_loop_L2
 # - hand the chosen `nvl` shape to L2, which will walk M for that chunk
 
 
-def _emit_primary_n_predicate(ctx):
+def _gen_primary_n_predicate(ctx):
     regs = ctx.registers
     if ctx.is_ext_precision():
         return f"ptrue   {regs.predicates.n_main}.h, vl16\n"
     return f"whilelt     {regs.predicates.n_main}.s, {regs.counters.TMP_CNT}, {regs.dims.MIN_N}\n"
 
 
-def _emit_n_loop_block(ctx, multiplier, m_size):
+def _gen_n_loop_block(ctx, multiplier, m_size):
     regs = ctx.registers
     next_label = f".loops_of_l1_{multiplier - 1}vl" if multiplier > 2 else ".loops_of_l1_1vl"
     threshold = tile_size_from_vl(multiplier - 1)
@@ -25,7 +25,7 @@ def _emit_n_loop_block(ctx, multiplier, m_size):
     code_str += f"cmp     {regs.dims.MIN_N}, #{threshold}\n"
     code_str += f"ble     {next_label}\n"
     code_str += f"sub     {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}\n"
-    code_str += _emit_primary_n_predicate(ctx)
+    code_str += _gen_primary_n_predicate(ctx)
     for _ in range(multiplier - 1):
         code_str += f"add     {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, #{vl1}\n"
     code_str += f"whilelt     {regs.predicates.n_tail}{pred_suffix}, {regs.counters.TMP_CNT}, {regs.dims.MIN_N}\n"
@@ -34,7 +34,7 @@ def _emit_n_loop_block(ctx, multiplier, m_size):
     return code_str
 
 
-def _emit_n_loop_condition(ctx, n_size):
+def _gen_n_loop_condition(ctx, n_size):
     regs = ctx.registers
     multiplier = n_size // tile_size_from_vl(1)
     code_str = f""
@@ -94,11 +94,11 @@ def kernel_mm_loop_n(ctx, n_size=None, m_size=None):
     vl3 = tile_size_from_vl(3)
 
     if n_size > vl3:
-        code_str += _emit_n_loop_block(ctx, 4, m_size)
+        code_str += _gen_n_loop_block(ctx, 4, m_size)
     if n_size > vl2:
-        code_str += _emit_n_loop_block(ctx, 3, m_size)
+        code_str += _gen_n_loop_block(ctx, 3, m_size)
     if n_size > vl1:
-        code_str += _emit_n_loop_block(ctx, 2, m_size)
+        code_str += _gen_n_loop_block(ctx, 2, m_size)
 
     code_str += f".loops_of_l1_1vl:\n"
     code_str += f"sub     {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}\n"
@@ -111,5 +111,5 @@ def kernel_mm_loop_n(ctx, n_size=None, m_size=None):
     code_str += f"mul     {regs.counters.TMP_CNT}, {regs.dims.MIN_N}, {regs.params.LDC}\n"
     code_str += f"add     {regs.params.pC}, {regs.params.pC}, {regs.counters.TMP_CNT}\n"
     code_str += f".cond_of_loops_n:\n"
-    code_str += _emit_n_loop_condition(ctx, n_size)
+    code_str += _gen_n_loop_condition(ctx, n_size)
     return code_str

@@ -6,7 +6,7 @@ from kernel_mm_loop_k import kernel_mm_loop_k
 # concrete `mvl x nvl` kernel body.
 
 
-def _emit_m_count_init(ctx, m_size):
+def _gen_m_count_init(ctx, m_size):
     regs = ctx.registers
     multiplier = m_size // tile_size_from_vl(1)
     if multiplier == 1:
@@ -16,14 +16,14 @@ def _emit_m_count_init(ctx, m_size):
     return f"cntp     {regs.dims.MIN_M}, {regs.predicates.m_main}, {regs.predicates.m_main}.b\n"
 
 
-def _emit_primary_m_predicate(ctx):
+def _gen_primary_m_predicate(ctx):
     regs = ctx.registers
     if ctx.is_ext_precision():
         return f"ptrue   {regs.predicates.m_main}.h, vl16\n"
     return f"whilelt     {regs.predicates.m_main}.s, {regs.counters.TMP_CNT}, {regs.dims.MIN_M}\n"
 
 
-def _emit_m_loop_block(ctx, multiplier, nvl, label):
+def _gen_m_loop_block(ctx, multiplier, nvl, label):
     regs = ctx.registers
     next_label = f".loop_m_{multiplier - 1}vl_{nvl}_{label}" if multiplier > 2 else f".loop_m_1vl_{nvl}_{label}"
     threshold = tile_size_from_vl(multiplier - 1)
@@ -34,7 +34,7 @@ def _emit_m_loop_block(ctx, multiplier, nvl, label):
     code_str += f"cmp      {regs.dims.MIN_M}, #{threshold}\n"
     code_str += f"ble      {next_label}\n"
     code_str += f"sub      {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}\n"
-    code_str += _emit_primary_m_predicate(ctx)
+    code_str += _gen_primary_m_predicate(ctx)
     for _ in range(multiplier - 1):
         code_str += f"add      {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, #{vl1}\n"
     code_str += f"whilelt  {regs.predicates.m_tail}{pred_suffix}, {regs.counters.TMP_CNT}, {regs.dims.MIN_M}\n"
@@ -43,7 +43,7 @@ def _emit_m_loop_block(ctx, multiplier, nvl, label):
     return code_str
 
 
-def _emit_m_loop_condition(ctx, m_size, nvl, label):
+def _gen_m_loop_condition(ctx, m_size, nvl, label):
     regs = ctx.registers
     multiplier = m_size // tile_size_from_vl(1)
     code_str = f""
@@ -76,7 +76,7 @@ def kernel_mm_loop_L2(ctx, m_size, label, nvl):
     # `MIN_M` is recomputed per M iteration because the last M chunk may be
     # smaller than the logical tile even when the selected `mvl` shape is wide.
     code_str += f"sub      {regs.dims.MIN_M}, {regs.dims.MIN_M}, {regs.dims.MIN_M}\n"
-    code_str += _emit_m_count_init(ctx, m_size)
+    code_str += _gen_m_count_init(ctx, m_size)
     code_str += ctx.model.kernel_mm_loop_m_pre_func(ctx)
 
     vl1 = tile_size_from_vl(1)
@@ -84,11 +84,11 @@ def kernel_mm_loop_L2(ctx, m_size, label, nvl):
     vl3 = tile_size_from_vl(3)
 
     if m_size > vl3:
-        code_str += _emit_m_loop_block(ctx, 4, nvl, label)
+        code_str += _gen_m_loop_block(ctx, 4, nvl, label)
     if m_size > vl2:
-        code_str += _emit_m_loop_block(ctx, 3, nvl, label)
+        code_str += _gen_m_loop_block(ctx, 3, nvl, label)
     if m_size > vl1:
-        code_str += _emit_m_loop_block(ctx, 2, nvl, label)
+        code_str += _gen_m_loop_block(ctx, 2, nvl, label)
 
     code_str += f".loop_m_1vl_{nvl}_{label}:\n"
     code_str += f"sub      {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}\n"
@@ -99,5 +99,5 @@ def kernel_mm_loop_L2(ctx, m_size, label, nvl):
     code_str += f"add      {regs.counters.counterI}, {regs.counters.counterI}, {regs.dims.MIN_M}\n"
     code_str += ctx.model.kernel_mm_loop_m_post_func(ctx)
     code_str += f".cond_of_loops_m_{nvl}_{label}:\n"
-    code_str += _emit_m_loop_condition(ctx, m_size, nvl, label)
+    code_str += _gen_m_loop_condition(ctx, m_size, nvl, label)
     return code_str
