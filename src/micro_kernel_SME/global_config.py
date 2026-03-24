@@ -1,6 +1,3 @@
-from loguru import logger
-
-
 S_ELEMENTS_PER_VL = 16
 H_ELEMENTS_PER_VL = 32
 MAX_TILE_AREA_VL = 4

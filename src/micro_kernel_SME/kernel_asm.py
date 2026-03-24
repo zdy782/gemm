@@ -213,10 +213,6 @@ def _new_kernel_label(prefix):
     return f".L_kernel_asm_{prefix}_{_KERNEL_LABEL_COUNTER}"
 
 
-def _main_role(side):
-    return "m_main" if side == "a" else "n_main"
-
-
 def _default_lane_roles(side, vl_count):
     lane_kinds = {
         1: ("main",),

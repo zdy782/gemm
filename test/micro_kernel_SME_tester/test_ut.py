@@ -1,4 +1,3 @@
-import argparse
 import os
 import csv
 
@@ -7,15 +6,7 @@ from test_runner import run_single_test, setup_environment
 
 current_path = os.path.dirname(os.path.abspath(__file__))
 setup_environment()
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Run SME UT cases from CSV")
-    return parser.parse_args()
-
-
 def main():
-    args = parse_args()
     testcases_path = os.path.join(current_path, "testcases_ut.csv")
     required_columns = {
         "M", "N", "K", "lda", "ldb", "ldc",

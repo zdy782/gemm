@@ -3,7 +3,7 @@ import re
 import pandas as pd
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -52,7 +52,6 @@ def generate_test_cases_by_trans() -> List[Dict]:
     cases_by_trans = {f"{ta}{tb}": [] for ta, tb in trans_pairs}
 
     SIZES_S = [16, 24, 32, 48]
-    SIZES_L = [64, 96, 128, 192, 256, 300, 512]
     K_LIST = [16, 24, 32, 48]
 
     def label(x: int) -> str:
@@ -101,7 +100,7 @@ def generate_test_cases_by_trans() -> List[Dict]:
                     )
 
     final_cases = []
-    for trans_key, cases in cases_by_trans.items():
+    for cases in cases_by_trans.values():
         unique_dict = {}
         for c in cases:
             key = (c["m"], c["n"], c["k"], c["transa"], c["transb"])

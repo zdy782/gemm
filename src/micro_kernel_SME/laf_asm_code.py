@@ -4,7 +4,6 @@ from global_config import (
     SAVE_REGS,
     START_SME_FEATURE,
     STOP_SME_FEATURE,
-    get_element_size_shift,
     tile_size_from_vl,
 )
 from kernel_mm_loop_L1 import kernel_mm_loop_n

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from global_config import get_element_size_shift, get_ld_element_suffix, tile_size_from_vl
+from global_config import get_element_size_shift, get_ld_element_suffix
 
 # This module implements how a logical A/B lane is materialized into Z
 # registers. `kernel_asm.py` decides which logical roles should be loaded
@@ -10,13 +10,6 @@ from global_config import get_element_size_shift, get_ld_element_suffix, tile_si
 
 LOAD_CONTIGUOUS = "contiguous"
 LOAD_GATHER = "gather"
-_LABEL_COUNTER = 0
-
-
-def _new_label(prefix):
-    global _LABEL_COUNTER
-    _LABEL_COUNTER += 1
-    return f".L_{prefix}_{_LABEL_COUNTER}"
 
 
 def _pred(ctx, role):
@@ -56,24 +49,6 @@ def _fast_pair_predicate(ctx, load_role, next_role=None):
     if next_role != load_role:
         code_str += f"zip1      {_ext_pred(ctx, next_role)}.h, {_pred(ctx, load_role)}.h, {_pred(ctx, load_role)}.h\n"
     return code_str, _ext_pred(ctx, load_role), ""
-
-
-def _axis_min_register(ctx, role):
-    return ctx.registers.dims.MIN_M if role.startswith("m_") else ctx.registers.dims.MIN_N
-
-
-def _emit_runtime_pair_select(ctx, role, full_threshold, full_code, partial_code):
-    fast_label = _new_label("ext_pair_fast")
-    done_label = _new_label("ext_pair_done")
-    dim_reg = _axis_min_register(ctx, role)
-    code_str = f"cmp       {dim_reg}, #{full_threshold}\n"
-    code_str += f"bge       {fast_label}\n"
-    code_str += partial_code
-    code_str += f"b         {done_label}\n"
-    code_str += f"{fast_label}:\n"
-    code_str += full_code
-    code_str += f"{done_label}:\n"
-    return code_str
 
 
 def _rdvl_lane_offset(registers, lane):
@@ -155,35 +130,6 @@ def _emit_ext_contiguous_head_pair(ctx, base, stride, tmp_base, role0, role1, ds
     )
 
 
-def _emit_ext_contiguous_head_mixed_pair(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
-    regs = ctx.registers
-    pred0 = _pred(ctx, role0)
-    pred1 = _pred(ctx, role1)
-    code_str = f""
-    code_str += f"add       {tmp_base}, {base}, {stride}, LSL #1\n"
-    code_str += f"ld1h      {low_tmp}.h, {pred0}/z, [{base}]\n"
-    code_str += f"ld1h      {high_tmp}.h, {pred0}/z, [{tmp_base}]\n"
-    code_str += f"mov       {dst0}.h, #0\n"
-    code_str += f"mov       {dst1}.h, #0\n"
-    code_str += f"mov       {dst0}.h, {pred0}/m, {low_tmp}.h\n"
-    code_str += f"mov       {dst1}.h, {pred0}/m, {high_tmp}.h\n"
-    code_str += _rdvl_lane_offset(regs, 1)
-    code_str += f"ld1h      {low_tmp}.h, {pred1}/z, [{base}, {regs.address.TMP_PTR2}, LSL #1]\n"
-    code_str += f"mov       {high_tmp}.h, #0\n"
-    code_str += f"ext       {high_tmp}.b, {high_tmp}.b, {low_tmp}.b, #32\n"
-    code_str += f"orr       {dst0}.d, {dst0}.d, {high_tmp}.d\n"
-    code_str += f"ld1h      {low_tmp}.h, {pred1}/z, [{tmp_base}, {regs.address.TMP_PTR2}, LSL #1]\n"
-    code_str += f"mov       {high_tmp}.h, #0\n"
-    code_str += f"ext       {high_tmp}.b, {high_tmp}.b, {low_tmp}.b, #32\n"
-    code_str += f"orr       {dst1}.d, {dst1}.d, {high_tmp}.d\n"
-    code_str += f"mov       {low_tmp}.d, {dst0}.d\n"
-    code_str += f"zip1      {dst0}.h, {dst0}.h, {dst1}.h\n"
-    code_str += f"zip2      {dst1}.h, {low_tmp}.h, {dst1}.h\n"
-    code_str += _zip_ext_predicate(ctx, role0)
-    code_str += _zip_ext_predicate(ctx, role1)
-    return code_str
-
-
 def _emit_ext_contiguous_lane_fast_pair(ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None):
     code_str = f""
     pred_pre, pred, pred_post = _fast_pair_predicate(ctx, role, next_role if next_dst is not None else None)
@@ -221,35 +167,6 @@ def _emit_ext_contiguous_lane(ctx, base, paired_base, role, dst, lane, low_tmp, 
     return _emit_ext_contiguous_lane_fast_pair(
         ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=next_dst, next_role=next_role
     )
-
-
-def _emit_ext_contiguous_lane_mixed_pair(ctx, base, paired_base, role0, role1, dst0, dst1, lane, low_tmp, high_tmp):
-    regs = ctx.registers
-    pred0 = _pred(ctx, role0)
-    pred1 = _pred(ctx, role1)
-    code_str = f""
-    code_str += _rdvl_lane_offset(regs, lane)
-    code_str += f"ld1h      {low_tmp}.h, {pred0}/z, [{base}, {regs.address.TMP_PTR2}, LSL #1]\n"
-    code_str += f"ld1h      {high_tmp}.h, {pred0}/z, [{paired_base}, {regs.address.TMP_PTR2}, LSL #1]\n"
-    code_str += f"mov       {dst0}.h, #0\n"
-    code_str += f"mov       {dst1}.h, #0\n"
-    code_str += f"mov       {dst0}.h, {pred0}/m, {low_tmp}.h\n"
-    code_str += f"mov       {dst1}.h, {pred0}/m, {high_tmp}.h\n"
-    code_str += _rdvl_lane_offset(regs, lane + 1)
-    code_str += f"ld1h      {low_tmp}.h, {pred1}/z, [{base}, {regs.address.TMP_PTR2}, LSL #1]\n"
-    code_str += f"mov       {high_tmp}.h, #0\n"
-    code_str += f"ext       {high_tmp}.b, {high_tmp}.b, {low_tmp}.b, #32\n"
-    code_str += f"orr       {dst0}.d, {dst0}.d, {high_tmp}.d\n"
-    code_str += f"ld1h      {low_tmp}.h, {pred1}/z, [{paired_base}, {regs.address.TMP_PTR2}, LSL #1]\n"
-    code_str += f"mov       {high_tmp}.h, #0\n"
-    code_str += f"ext       {high_tmp}.b, {high_tmp}.b, {low_tmp}.b, #32\n"
-    code_str += f"orr       {dst1}.d, {dst1}.d, {high_tmp}.d\n"
-    code_str += f"mov       {low_tmp}.d, {dst0}.d\n"
-    code_str += f"zip1      {dst0}.h, {dst0}.h, {dst1}.h\n"
-    code_str += f"zip2      {dst1}.h, {low_tmp}.h, {dst1}.h\n"
-    code_str += _zip_ext_predicate(ctx, role0)
-    code_str += _zip_ext_predicate(ctx, role1)
-    return code_str
 
 
 def _emit_ext_contiguous_last_k_fast_pair(ctx, base, role, dst, lane, low_tmp, zero_tmp, next_dst=None, next_role=None):
@@ -297,33 +214,6 @@ def _emit_ext_contiguous_last_k(ctx, base, role, dst, lane, low_tmp, zero_tmp, n
     )
 
 
-def _emit_ext_contiguous_last_k_mixed_pair(ctx, base, role0, role1, dst0, dst1, lane, low_tmp, zero_tmp):
-    regs = ctx.registers
-    pred0 = _pred(ctx, role0)
-    pred1 = _pred(ctx, role1)
-    code_str = f""
-    if lane > 0:
-        code_str += _rdvl_lane_offset(regs, lane)
-        code_str += f"ld1h      {low_tmp}.h, {pred0}/z, [{base}, {regs.address.TMP_PTR2}, LSL #1]\n"
-    else:
-        code_str += f"ld1h      {low_tmp}.h, {pred0}/z, [{base}]\n"
-    code_str += f"mov       {dst0}.h, #0\n"
-    code_str += f"mov       {dst1}.h, #0\n"
-    code_str += f"mov       {dst0}.h, {pred0}/m, {low_tmp}.h\n"
-    code_str += _rdvl_lane_offset(regs, lane + 1)
-    code_str += f"ld1h      {low_tmp}.h, {pred1}/z, [{base}, {regs.address.TMP_PTR2}, LSL #1]\n"
-    code_str += f"mov       {zero_tmp}.h, #0\n"
-    code_str += f"ext       {zero_tmp}.b, {zero_tmp}.b, {low_tmp}.b, #32\n"
-    code_str += f"orr       {dst0}.d, {dst0}.d, {zero_tmp}.d\n"
-    code_str += f"mov       {low_tmp}.d, {dst0}.d\n"
-    code_str += f"mov       {dst1}.h, #0\n"
-    code_str += f"zip1      {dst0}.h, {dst0}.h, {dst1}.h\n"
-    code_str += f"zip2      {dst1}.h, {low_tmp}.h, {dst1}.h\n"
-    code_str += _zip_ext_predicate(ctx, role0)
-    code_str += _zip_ext_predicate(ctx, role1)
-    return code_str
-
-
 def _emit_non_ext_contiguous(load_inst, ctx, base, role, dst, lane):
     suffix = get_ld_element_suffix(ctx)
     pred = _load_predicate(ctx, role)
@@ -366,56 +256,6 @@ def _emit_ext_gather_pair(ctx, base, role, index_vec, dst, low_tmp, high_tmp, pa
     return code_str
 
 
-def _emit_ext_gather_pair_two_bases(
-    ctx,
-    base0,
-    high0_base,
-    role0,
-    base1,
-    role1,
-    index_vec,
-    dst0,
-    dst1,
-    low_tmp,
-    high_tmp,
-):
-    pred0 = _ext_pred(ctx, role0)
-    pred1 = _ext_pred(ctx, role1)
-    pred0_logical = _pred(ctx, role0)
-    code_str = f""
-
-    code_str += _zip_ext_predicate(ctx, role0)
-    code_str += f"ld1h      {low_tmp}.s, {pred0}/z, [{base0}, {index_vec}.s, UXTW]\n"
-    code_str += f"ld1h      {high_tmp}.s, {pred0}/z, [{high0_base}, {index_vec}.s, UXTW]\n"
-    code_str += f"uzp1      {low_tmp}.h, {low_tmp}.h, {low_tmp}.h\n"
-    code_str += f"uzp1      {high_tmp}.h, {high_tmp}.h, {high_tmp}.h\n"
-    code_str += f"mov       {dst0}.h, #0\n"
-    code_str += f"mov       {dst1}.h, #0\n"
-    code_str += f"mov       {dst0}.h, {pred0_logical}/m, {low_tmp}.h\n"
-    code_str += f"mov       {dst1}.h, {pred0_logical}/m, {high_tmp}.h\n"
-
-    code_str += _zip_ext_predicate(ctx, role1)
-    code_str += f"ld1h      {low_tmp}.s, {pred1}/z, [{base1}, {index_vec}.s, UXTW]\n"
-    code_str += f"uzp1      {low_tmp}.h, {low_tmp}.h, {low_tmp}.h\n"
-    code_str += f"mov       {high_tmp}.h, #0\n"
-    code_str += f"ext       {high_tmp}.b, {high_tmp}.b, {low_tmp}.b, #32\n"
-    code_str += f"orr       {dst0}.d, {dst0}.d, {high_tmp}.d\n"
-
-    code_str += f"add       {base1}, {base1}, #2\n"
-    code_str += f"ld1h      {low_tmp}.s, {pred1}/z, [{base1}, {index_vec}.s, UXTW]\n"
-    code_str += f"uzp1      {low_tmp}.h, {low_tmp}.h, {low_tmp}.h\n"
-    code_str += f"mov       {high_tmp}.h, #0\n"
-    code_str += f"ext       {high_tmp}.b, {high_tmp}.b, {low_tmp}.b, #32\n"
-    code_str += f"orr       {dst1}.d, {dst1}.d, {high_tmp}.d\n"
-
-    code_str += f"mov       {low_tmp}.d, {dst0}.d\n"
-    code_str += f"zip1      {dst0}.h, {dst0}.h, {dst1}.h\n"
-    code_str += f"zip2      {dst1}.h, {low_tmp}.h, {dst1}.h\n"
-    code_str += _zip_ext_predicate(ctx, role0)
-    code_str += _zip_ext_predicate(ctx, role1)
-    return code_str
-
-
 def _emit_ext_gather_last_k(ctx, base, role, index_vec, dst, low_tmp, zero_tmp, next_dst=None, next_role=None):
     if next_dst is None:
         return (
@@ -437,45 +277,6 @@ def _emit_ext_gather_last_k(ctx, base, role, index_vec, dst, low_tmp, zero_tmp, 
         return code_str
     code_str += f"uzp1      {low_tmp}.h, {low_tmp}.h, {low_tmp}.h\n"
     code_str += f"zip1      {dst}.h, {low_tmp}.h, {zero_tmp}.h\n"
-    return code_str
-
-
-def _emit_ext_gather_last_k_two_bases(
-    ctx,
-    base0,
-    role0,
-    base1,
-    role1,
-    index_vec,
-    dst0,
-    dst1,
-    low_tmp,
-    zero_tmp,
-):
-    pred0 = _ext_pred(ctx, role0)
-    pred1 = _ext_pred(ctx, role1)
-    pred0_logical = _pred(ctx, role0)
-    code_str = f""
-
-    code_str += _zip_ext_predicate(ctx, role0)
-    code_str += f"ld1h      {low_tmp}.s, {pred0}/z, [{base0}, {index_vec}.s, UXTW]\n"
-    code_str += f"uzp1      {low_tmp}.h, {low_tmp}.h, {low_tmp}.h\n"
-    code_str += f"mov       {dst0}.h, #0\n"
-    code_str += f"mov       {dst1}.h, #0\n"
-    code_str += f"mov       {dst0}.h, {pred0_logical}/m, {low_tmp}.h\n"
-
-    code_str += _zip_ext_predicate(ctx, role1)
-    code_str += f"ld1h      {low_tmp}.s, {pred1}/z, [{base1}, {index_vec}.s, UXTW]\n"
-    code_str += f"uzp1      {low_tmp}.h, {low_tmp}.h, {low_tmp}.h\n"
-    code_str += f"mov       {zero_tmp}.h, #0\n"
-    code_str += f"ext       {zero_tmp}.b, {zero_tmp}.b, {low_tmp}.b, #32\n"
-    code_str += f"orr       {dst0}.d, {dst0}.d, {zero_tmp}.d\n"
-    code_str += f"mov       {low_tmp}.d, {dst0}.d\n"
-    code_str += f"mov       {dst1}.h, #0\n"
-    code_str += f"zip1      {dst0}.h, {dst0}.h, {dst1}.h\n"
-    code_str += f"zip2      {dst1}.h, {low_tmp}.h, {dst1}.h\n"
-    code_str += _zip_ext_predicate(ctx, role0)
-    code_str += _zip_ext_predicate(ctx, role1)
     return code_str
 
 
