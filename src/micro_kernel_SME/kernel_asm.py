@@ -259,7 +259,7 @@ FAST_EXT_LAST_K_PLANS = FAST_EXT_KERNEL_PLANS
 
 
 _SMALL_FAST_PLAN_KEYS = {
-    "small_nt": {"4VL_1VL", "1VL_4VL", "3VL_1VL", "1VL_3VL", "2VL_2VL", "1VL_2VL", "2VL_1VL"},
+    "small_nt": {"4VL_1VL", "3VL_1VL", "1VL_3VL", "2VL_2VL", "1VL_2VL", "2VL_1VL"},
     "small_nn": {"4VL_1VL", "3VL_1VL", "2VL_2VL", "2VL_1VL"},
     # TT only keeps the widest B-side fast chunk; 1VL_2VL still regresses
     # into the mixed/tail path in M-remainder loops and is not a net win.

@@ -46,11 +46,14 @@ def _emit_n_loop_condition(ctx, n_size):
         code_str += f"b.first     .loops_of_n\n"
     elif multiplier == 3:
         code_str += f"whilelt     {regs.predicates.n_main}.h, {regs.counters.counterJ}, {regs.dims.origN}\n"
-        code_str += f"add         {regs.counters.TMP_CNT}, {regs.counters.counterJ}, #{increment}\n"
+        # A 3VL tile is emitted as a 2VL main chunk plus a 1VL tail chunk.
+        # The tail predicate therefore has to start at the logical 2VL boundary,
+        # not at a single-VL step from counterJ.
+        code_str += f"add         {regs.counters.TMP_CNT}, {regs.counters.counterJ}, #{tile_size_from_vl(2)}\n"
         code_str += f"whilelt     {regs.predicates.n_tail}.s, {regs.counters.TMP_CNT}, {regs.dims.origN}\n"
         code_str += f"sub     {regs.dims.MIN_N}, {regs.dims.MIN_N}, {regs.dims.MIN_N}\n"
-        code_str += f"cntp    {regs.dims.MIN_N}, {regs.predicates.n_main}, {regs.predicates.n_main}.b\n"
-        code_str += f"cntp    {regs.counters.TMP_CNT}, {regs.predicates.n_tail}, {regs.predicates.n_tail}.b\n"
+        code_str += f"cntp    {regs.dims.MIN_N}, {regs.predicates.n_main}, {regs.predicates.n_main}.h\n"
+        code_str += f"cntp    {regs.counters.TMP_CNT}, {regs.predicates.n_tail}, {regs.predicates.n_tail}.s\n"
         code_str += f"add     {regs.dims.MIN_N}, {regs.dims.MIN_N}, {regs.counters.TMP_CNT}\n"
         code_str += f"cmp     {regs.dims.MIN_N}, #0\n"
         code_str += f"bgt      .loops_of_n\n"
