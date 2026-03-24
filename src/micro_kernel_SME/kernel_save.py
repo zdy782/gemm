@@ -3,18 +3,22 @@ from kernel_asm import save_zacol
 
 
 def get_pg0(ctx):
+    # Use the main-row predicate as the default save predicate for every fully covered subtile slice.
     return ctx.registers.ext_predicate("m_main") if ctx.is_ext_precision() else ctx.registers.logical_predicate("m_main")
 
 
 def get_pg1(ctx):
+    # Use the tail-row predicate for the final partial subtile slice when the save height is not full.
     return ctx.registers.ext_predicate("m_tail") if ctx.is_ext_precision() else ctx.registers.logical_predicate("m_tail")
 
 
 def _vl_multiplier(vl_label):
+    # Convert labels such as `2VL` into the integer subtile count used by the save helpers.
     return int(vl_label.replace("VL", ""))
 
 
 def _save_subtile_predicates(ctx, count):
+    # Fill the save predicate list with main predicates and swap the last one to tail when the save group is partial.
     predicates = [get_pg0(ctx)] * get_save_subtile_count()
     if count > 1:
         predicates[count - 1] = get_pg1(ctx)
@@ -22,19 +26,23 @@ def _save_subtile_predicates(ctx, count):
 
 
 def _save_temp_pairs(rab0, rc0, rab1, rc1, t0, t1, t2="z30", t3="z31"):
+    # Group the scratch Z registers exactly as `save_zacol` expects so every saved column reuses the same scratch layout.
     return [(rab0, rc0), (rab1, rc1), (t0, t1), (t2, t3)]
 
 
 def _save_base_index_regs(ctx):
+    # Slice out the logical ZA base-index registers that correspond to the configured save subtile count.
     return ctx.registers.save.base_indices[: get_save_subtile_count()]
 
 
 def _save_column_ptrs(ctx):
+    # Slice out the live C-column pointers that back the active save subtile count.
     regs = ctx.registers.pointers
     return (regs.pC0, regs.pC1, regs.pC2, regs.pC3)[: get_save_subtile_count()]
 
 
 def _save_column_temp_groups():
+    # Group scratch Z registers by output column so each save stream gets a fixed temporary bundle.
     return (
         ("z0", "z1", "z2", "z3"),
         ("z4", "z5", "z6", "z7"),
@@ -44,6 +52,7 @@ def _save_column_temp_groups():
 
 
 def _save_column_configs(ctx):
+    # Zip together column pointers, VL offsets, and scratch groups so the save loops can walk one configuration list.
     return [
         (pc, f"#{offset}", temps)
         for pc, offset, temps in zip(
@@ -55,6 +64,7 @@ def _save_column_configs(ctx):
 
 
 def _gen_save_base_index_init(ctx):
+    # Seed the ZA slice indices used to read each saved column group out of the accumulator tile.
     code_parts = []
     for reg, idx in zip(_save_base_index_regs(ctx), get_save_base_slice_indices()):
         code_parts.append(f"mov      {reg}, #{idx}\n")
@@ -62,6 +72,7 @@ def _gen_save_base_index_init(ctx):
 
 
 def _gen_save_column_ptr_setup(ctx):
+    # Build the pC1/pC2/pC3 column pointers from pC0 and LDC before the save loops start streaming C back.
     regs = ctx.registers
     ptrs = _save_column_ptrs(ctx)
     code_parts = []
@@ -73,6 +84,7 @@ def _gen_save_column_ptr_setup(ctx):
 
 
 def _save_zacol_group(ctx, count, pc, za_regs, base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2="z30", t3="z31"):
+    # Save one N-group by walking the participating ZA registers, predicates, and VL offsets in lockstep.
     predicates = _save_subtile_predicates(ctx, count)
     temp_pairs = _save_temp_pairs(rab0, rc0, rab1, rc1, t0, t1, t2, t3)
     code_parts = []
@@ -114,6 +126,7 @@ save_zacol_map = {
 
 
 def kernel_save_c_base_val(ctx, label, num, mvl, nvl, pc, c0="za0", c1="za1", c2="za2", c3="za3"):
+    # Handle the final short N group by iterating column-by-column instead of using the fully unrolled save path.
     regs = ctx.registers
     code_str = f""
     code_str += f"mov      {regs.counters.TMP_CNT}, {num}\n"
@@ -145,6 +158,7 @@ def kernel_save_c_base_val(ctx, label, num, mvl, nvl, pc, c0="za0", c1="za1", c2
 
 
 def kernel_save_c_base_n_1VL_(ctx, mvl, c0="za0", c1="za1", c2="za2", c3="za3"):
+    # Save one logical N group of width `1VL` using the ZA registers that belong to the current outer save chunk.
     za_regs = [c0, c1, c2, c3][: _vl_multiplier(mvl)]
     code_parts = []
 
@@ -167,6 +181,7 @@ def kernel_save_c_base_n_1VL_(ctx, mvl, c0="za0", c1="za1", c2="za2", c3="za3"):
 
 
 def kernel_save_c_base_n_1VL(ctx, label, mvl, nvl, c0="za0", c1="za1", c2="za2", c3="za3"):
+    # Save the final `1VL`-based N group, branching between the fully aligned path and the short-tail helper.
     regs = ctx.registers
     code_str = f""
     code_str += _gen_save_base_index_init(ctx)
@@ -182,6 +197,7 @@ def kernel_save_c_base_n_1VL(ctx, label, mvl, nvl, c0="za0", c1="za1", c2="za2",
 
 
 def _kernel_save_c_base_n_multi(ctx, label, mvl, full_groups, tail_group, tail_nvl):
+    # Save wider N groups by emitting their full `1VL` slices first and then delegating the last partial group to the tail helper.
     regs = ctx.registers
     code_str = f""
     code_str += _gen_save_base_index_init(ctx)
@@ -207,6 +223,7 @@ def kernel_save_c_base_n_3VL(ctx, label, mvl):
 
 
 def _kernel_save_c_single_n(ctx, label, mvl, *za_regs):
+    # Save kernels whose N shape is already `1VL`, then advance pC0 to the next M tile origin.
     regs = ctx.registers
     code_str = f""
     code_str += f"mov      {regs.address.TMP_PTR}, {regs.pointers.pC0}\n"

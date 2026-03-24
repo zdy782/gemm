@@ -2,25 +2,21 @@ from copy import deepcopy
 
 from global_config import LDNT1, STNT1, get_element_size_shift, get_element_suffix, get_ld1, get_mopa_inst, tile_size_from_vl
 
-# `kernel_asm.py` owns the tile-local instruction schedule. The loop layers
-# above decide *which* `mvl x nvl` shape is active; this file decides *how* that
-# shape loads A/B lanes, issues mopa instructions, and advances pointers.
-#
-# The key abstraction is a small "plan": a list of `load_ab` / `a` / `b` /
-# `mopa` / `update` records. For ext-precision small kernels we derive paired
-# variants from the base plan instead of duplicating a separate schedule per
-# transpose and tile.
+# This file converts a chosen `mvl x nvl` tile into the exact load, mopa, and pointer-update schedule that will be emitted.
 
 
 def _resolve_load_inst(ctx, load_inst):
+    # Let callers override the load opcode while defaulting to the model-specific `ld1*` choice.
     return get_ld1(ctx) if load_inst is None else load_inst
 
 
 def _vector_operand(ctx, reg):
+    # Format one Z register with the current element suffix so mopa emission stays precision-agnostic.
     return f"{reg}{get_element_suffix(ctx)}"
 
 
 def _pointer_update(ctx, ptr_name):
+    # Advance the live A/B pointer from the ext temporary base or the scalar base after each tile-local update record.
     regs = ctx.registers
     if ptr_name == "A":
         update_base = regs.address.TMP_PTR if ctx.is_ext_precision() else regs.pointers.pA0
@@ -34,6 +30,7 @@ def _pointer_update(ctx, ptr_name):
 
 
 def _gen_load(ctx, op, regs_a, regs_b, load_inst, lda_inst, last_k):
+    # Turn one logical `load_ab` / `a` / `b` record into the matching model callback, including optional paired mates.
     model = ctx.model
     if op["kind"] == "load_ab":
         load_fn = model.load_a0b0_last_k if last_k else model.load_a0b0
@@ -74,6 +71,7 @@ def _gen_load(ctx, op, regs_a, regs_b, load_inst, lda_inst, last_k):
 
 
 def _gen_mopa(ctx, op, regs_a, regs_b):
+    # Emit one outer-product using the logical main/tail predicates that belong to this plan record.
     lhs_pred = ctx.registers.ext_predicate(op["m_role"]) if ctx.is_ext_precision() else ctx.registers.logical_predicate(op["m_role"])
     rhs_pred = ctx.registers.ext_predicate(op["n_role"]) if ctx.is_ext_precision() else ctx.registers.logical_predicate(op["n_role"])
     return (
@@ -84,6 +82,7 @@ def _gen_mopa(ctx, op, regs_a, regs_b):
 
 
 def _gen_kernel(ctx, plan, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
+    # Walk the plan in order so every load, mopa, and pointer update is emitted exactly once into the tile body.
     load_inst = _resolve_load_inst(ctx, ldopt)
     lda_inst = _resolve_load_inst(ctx, ldaopt)
     regs_a = [a0, a1, a2, a3]
@@ -208,12 +207,14 @@ _KERNEL_LABEL_COUNTER = 0
 
 
 def _new_kernel_label(prefix):
+    # Mint unique local labels so multiple runtime fast/safe dispatches can coexist in one generated function.
     global _KERNEL_LABEL_COUNTER
     _KERNEL_LABEL_COUNTER += 1
     return f".L_kernel_asm_{prefix}_{_KERNEL_LABEL_COUNTER}"
 
 
 def _default_lane_roles(side, vl_count):
+    # Start every lane as `main` except the final logical lane, which is the default tail lane for that axis width.
     lane_kinds = {
         1: ("main",),
         2: ("main", "tail"),
@@ -225,6 +226,7 @@ def _default_lane_roles(side, vl_count):
 
 
 def _same_role_pair_specs(side, vl_count, leading_only=False):
+    # Same-role pairs are the only lanes that may legally upgrade from safe scalar loads to `zip1+zip2` pairing.
     lane_roles = _default_lane_roles(side, vl_count)
     pair_specs = []
     for lane in range(0, vl_count - 1, 2):
@@ -238,18 +240,22 @@ def _same_role_pair_specs(side, vl_count, leading_only=False):
 
 
 def _full_pair_specs(side, vl_count):
+    # Full pairing keeps every eligible same-role `2VL` chunk on this axis in paired form.
     return _same_role_pair_specs(side, vl_count, leading_only=False)
 
 
 def _hybrid_pair_specs(side, vl_count):
+    # Hybrid pairing only upgrades the first eligible `2VL` chunk and leaves the remaining lanes on the safe path.
     return _same_role_pair_specs(side, vl_count, leading_only=True)
 
 
 def _pair_spec_set(pair_specs):
+    # Strip pair specs down to lane tuples so later rewrites can test membership cheaply.
     return {(lane0, lane1) for lane0, lane1, _ in pair_specs}
 
 
 def _lane_roles_with_pairs(side, vl_count, pair_specs):
+    # Rewrite default roles so paired lanes both advertise the same logical role to the load helpers and mopa records.
     lane_roles = _default_lane_roles(side, vl_count)
     for lane0, lane1, role in pair_specs:
         lane_roles[lane0] = role
@@ -258,6 +264,7 @@ def _lane_roles_with_pairs(side, vl_count, pair_specs):
 
 
 def _load_lane_index(op, side):
+    # Read the logical lane index touched by one load record so we can find collapsible neighbors on one axis.
     if side == "a":
         if op["kind"] == "load_ab":
             return op["a"]
@@ -272,6 +279,7 @@ def _load_lane_index(op, side):
 
 
 def _load_lane_role(op, side):
+    # Read the logical main/tail role attached to one load record on the requested axis.
     if side == "a":
         if op["kind"] == "load_ab":
             return op["a_role"]
@@ -286,6 +294,7 @@ def _load_lane_role(op, side):
 
 
 def _set_paired_load(op, side, next_idx, next_role):
+    # Record the second lane that should be materialized together with this load when a pair collapse succeeds.
     if op["kind"] == "load_ab":
         op[f"next_{side}"] = next_idx
         op[f"next_{side}_role"] = next_role
@@ -295,6 +304,7 @@ def _set_paired_load(op, side, next_idx, next_role):
 
 
 def _rewrite_plan_roles(plan, a_roles, b_roles):
+    # Push the chosen lane-role map through the whole plan so loads and mopa predicates stay consistent.
     for op in plan:
         if op["kind"] == "load_ab":
             op["a_role"] = a_roles[op["a"]]
@@ -309,6 +319,7 @@ def _rewrite_plan_roles(plan, a_roles, b_roles):
 
 
 def _collapse_side_pairs(plan, side, lane_pairs):
+    # Merge adjacent same-side load records into one paired load record without crossing a pointer update boundary.
     ptr_name = "A" if side == "a" else "B"
     i = 0
     while i < len(plan):
@@ -345,10 +356,7 @@ def _collapse_side_pairs(plan, side, lane_pairs):
 
 
 def _build_small_plan_variant(key, last_k, a_pairs=(), b_pairs=()):
-    # Start from the canonical scalar plan for this tile, then rewrite lane
-    # roles and pair only the chunks that are explicitly allowed. This keeps the
-    # exact/tail decision localized here instead of scattering it across load
-    # helpers.
+    # Build one small-kernel plan by starting from the scalar schedule and only collapsing the lane pairs this tile can really support.
     base_plan = deepcopy(KERNEL_LAST_K_PLANS[key] if last_k else KERNEL_PLANS[key])
     m_vl, n_vl = _KEY_TILE_VL[key]
     a_roles = _lane_roles_with_pairs("a", m_vl, a_pairs)
@@ -362,10 +370,12 @@ def _build_small_plan_variant(key, last_k, a_pairs=(), b_pairs=()):
 
 
 def _axis_min_register(ctx, side):
+    # Select the live `MIN_M` or `MIN_N` remainder register that tells us whether one axis still spans a full chunk.
     return ctx.registers.dims.MIN_M if side == "a" else ctx.registers.dims.MIN_N
 
 
 def _side_is_contiguous(ctx, side):
+    # Only contiguous sides may upgrade to paired loads because gather sides already spend their budget on index-based shaping.
     config = getattr(ctx.model, "config", None)
     if config is None:
         return False
@@ -374,8 +384,7 @@ def _side_is_contiguous(ctx, side):
 
 
 def _gen_axis_plan_select(ctx, side, threshold, partial_code, full_code):
-    # A single contiguous side can be upgraded from safe -> paired when the
-    # remaining logical axis is wide enough to cover the whole chunk.
+    # Use one remainder check to choose between the safe chunk plan and the fully paired chunk plan for a single contiguous axis.
     fast_label = _new_kernel_label(f"{side}_full")
     done_label = _new_kernel_label(f"{side}_done")
     dim_reg = _axis_min_register(ctx, side)
@@ -390,9 +399,7 @@ def _gen_axis_plan_select(ctx, side, threshold, partial_code, full_code):
 
 
 def _gen_dual_axis_plan_select(ctx, m_threshold, n_threshold, safe_code, a_code, b_code, both_code):
-    # `2VL x 2VL` is the only small shape where both axes may independently
-    # become pairable. Check the M and N remainder counts separately so mixed
-    # exact/tail tiles can still use a one-sided paired plan.
+    # `2VL x 2VL` checks M and N separately so exact tiles can pair both axes while mixed exact/tail tiles still keep a one-sided upgrade.
     a_full_label = _new_kernel_label("m_full")
     b_check_label = _new_kernel_label("n_check")
     b_full_under_safe_label = _new_kernel_label("n_full_safe")
@@ -421,10 +428,12 @@ def _gen_dual_axis_plan_select(ctx, m_threshold, n_threshold, safe_code, a_code,
 
 
 def _gen_plan_code(ctx, key, last_k, plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
+    # Keep one wrapper so every runtime branch feeds through the same kernel emitter entrypoint.
     return _gen_kernel(ctx, plan, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def _gen_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
+    # Choose the active plan for this tile by starting safe and selectively upgrading exact contiguous chunks to paired execution.
     safe_plan = _build_small_plan_variant(key, last_k)
     safe_code = _gen_plan_code(ctx, key, last_k, safe_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
@@ -441,8 +450,7 @@ def _gen_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=N
     if key == "1VL_2VL":
         if not b_contig:
             return safe_code
-        # Only pair `1x2` when the second N lane is the same logical role. A
-        # `main + tail` exact tile is still emitted with the safe plan.
+        # `1x2` only upgrades when both N lanes share the same logical role, so `main + tail` stays on the scalar-safe path.
         b_pairs = _full_pair_specs("b", n_vl)
         if not b_pairs:
             return safe_code
@@ -510,9 +518,7 @@ def _gen_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=N
 
     if key == "2VL_2VL":
         if a_contig and b_contig:
-            # `2x2` can use four different schedules: fully safe, A-paired,
-            # B-paired, or both-sided paired. The threshold checks choose among
-            # those at runtime from the same source plan.
+            # `2x2` can be safe, A-paired, B-paired, or both-paired, so the runtime branch tree checks both remainders independently.
             a_pairs = _full_pair_specs("a", m_vl)
             b_pairs = _full_pair_specs("b", n_vl)
             if not a_pairs and not b_pairs:
@@ -628,6 +634,7 @@ def kernel_1VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaop
 
 
 def save_zacol(pc, off, za, base_idx, idx, pg, rab0, rc0):
+    # Extract one ZA column slice, accumulate it with C, and stream the updated vector back to memory.
     code_str = f""
     code_str += f"mova         {rab0}.s, {pg}/m, {za}v.s[{base_idx}, {idx}]\n"
     code_str += f"{LDNT1}      {rc0}.s, {pg}/z, [{pc}, {off}, MUL VL]\n"

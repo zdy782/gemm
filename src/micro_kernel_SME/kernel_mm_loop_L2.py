@@ -1,12 +1,11 @@
 from global_config import get_predicate_suffix, tile_size_from_vl
 from kernel_mm_loop_k import kernel_mm_loop_k
 
-# L2 is the inner M loop nested under L1's chosen N chunk. It mirrors the L1
-# structure: pick the widest legal M chunk, then dispatch to the K loop for the
-# concrete `mvl x nvl` kernel body.
+# L2 is the inner M loop that mirrors L1 by picking the widest legal `mvl` under the already chosen `nvl` chunk.
 
 
 def _gen_m_count_init(ctx, m_size):
+    # Count how many logical rows the current `m_main` predicate really covers so `MIN_M` matches the active width.
     regs = ctx.registers
     multiplier = m_size // tile_size_from_vl(1)
     if multiplier == 1:
@@ -17,6 +16,7 @@ def _gen_m_count_init(ctx, m_size):
 
 
 def _gen_primary_m_predicate(ctx):
+    # Build the first M predicate for the candidate chunk, matching ext and non-ext predicate element widths.
     regs = ctx.registers
     if ctx.is_ext_precision():
         return f"ptrue   {regs.predicates.m_main}.h, vl16\n"
@@ -24,6 +24,7 @@ def _gen_primary_m_predicate(ctx):
 
 
 def _gen_m_loop_block(ctx, multiplier, nvl, label):
+    # Emit one M-width candidate block that drops to the next narrower width when the remaining rows are too small.
     regs = ctx.registers
     next_label = f".loop_m_{multiplier - 1}vl_{nvl}_{label}" if multiplier > 2 else f".loop_m_1vl_{nvl}_{label}"
     threshold = tile_size_from_vl(multiplier - 1)
@@ -44,6 +45,7 @@ def _gen_m_loop_block(ctx, multiplier, nvl, label):
 
 
 def _gen_m_loop_condition(ctx, m_size, nvl, label):
+    # Recompute the live M remainder after one tile so the next inner-loop iteration sees the exact rows still pending.
     regs = ctx.registers
     multiplier = m_size // tile_size_from_vl(1)
     code_str = f""
@@ -68,13 +70,13 @@ def _gen_m_loop_condition(ctx, m_size, nvl, label):
 
 
 def kernel_mm_loop_L2(ctx, m_size, label, nvl):
+    # Enter the inner M loop, zero ZA for the new output tile, and dispatch from the widest legal M candidate down to `1VL`.
     regs = ctx.registers
     code_str = f""
     code_str += f"b    .cond_of_loops_m_{nvl}_{label}\n"
     code_str += f".loops_of_m_{nvl}_{label}:\n"
     code_str += f"zero     {{za0.b}}\n"
-    # `MIN_M` is recomputed per M iteration because the last M chunk may be
-    # smaller than the logical tile even when the selected `mvl` shape is wide.
+    # `MIN_M` is recomputed every iteration because the final M tile may be narrower than the logical `mvl` shape.
     code_str += f"sub      {regs.dims.MIN_M}, {regs.dims.MIN_M}, {regs.dims.MIN_M}\n"
     code_str += _gen_m_count_init(ctx, m_size)
     code_str += ctx.model.kernel_mm_loop_m_pre_func(ctx)

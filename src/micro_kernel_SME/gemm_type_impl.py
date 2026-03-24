@@ -2,10 +2,7 @@ from dataclasses import dataclass
 
 from global_config import get_element_size_shift, get_ld_element_suffix
 
-# This module implements how a logical A/B lane is materialized into Z
-# registers. `kernel_asm.py` decides which logical roles should be loaded
-# together; this file decides whether the load can really use a paired
-# `zip1+zip2` fast path or must stay on a safe single-lane path.
+# This file turns logical A/B lanes into concrete load-and-shape assembly for the chosen small/general model.
 
 
 LOAD_CONTIGUOUS = "contiguous"
@@ -13,25 +10,30 @@ LOAD_GATHER = "gather"
 
 
 def _pred(ctx, role):
+    # Return the logical predicate that matches the requested main/tail role.
     return ctx.registers.logical_predicate(role)
 
 
 def _ext_pred(ctx, role):
+    # Return the widened ext predicate used by bf16/fp16 `.h` loads.
     return ctx.registers.ext_predicate(role)
 
 
 def _load_predicate(ctx, role):
+    # Non-ext loads keep the `/z` suffix inline while ext loads use a separate zipped predicate register.
     pred = _pred(ctx, role)
     return pred if ctx.is_ext_precision() else f"{pred}/z"
 
 
 def _zip_ext_predicate(ctx, role):
+    # Build the duplicated `.h` predicate that lets one logical lane feed ext zip-based shaping.
     pred = _pred(ctx, role)
     ext_pred = _ext_pred(ctx, role)
     return f"zip1      {ext_pred}.h, {pred}.h, {pred}.h\n"
 
 
 def _paired_ext_predicate(ctx, first_role, second_role=None):
+    # Prepare predicates for a paired load, including the mixed-role setup used by gather and last-k helpers.
     second_role = first_role if second_role is None else second_role
     if second_role == first_role:
         return _zip_ext_predicate(ctx, first_role), _ext_pred(ctx, first_role), ""
@@ -44,6 +46,7 @@ def _paired_ext_predicate(ctx, first_role, second_role=None):
 
 
 def _fast_pair_predicate(ctx, load_role, next_role=None):
+    # Same-role fast pairs can load both halves through one ext predicate without post-fixup.
     next_role = load_role if next_role is None else next_role
     code_str = _zip_ext_predicate(ctx, load_role)
     if next_role != load_role:
@@ -52,6 +55,7 @@ def _fast_pair_predicate(ctx, load_role, next_role=None):
 
 
 def _rdvl_lane_offset(registers, lane):
+    # Convert a logical lane index into the byte offset pattern used by ext contiguous loads.
     tmp = registers.address.TMP_PTR2
     code_str = f"rdvl      {tmp}, #1\n"
     if lane == 1:
@@ -65,6 +69,7 @@ def _rdvl_lane_offset(registers, lane):
 
 
 def _scaled_add(dst, base, offset, lane):
+    # Reuse one add helper for gather lanes so lane-1/2/3 addressing stays consistent.
     if lane == 1:
         return f"add          {dst}, {base}, {offset}\n"
     if lane == 2:
@@ -75,9 +80,7 @@ def _scaled_add(dst, base, offset, lane):
 
 
 def _gen_zip_pair(dst0, dst1, low_tmp, high_tmp):
-    # Some paired paths reuse one temporary as the first destination. Emit
-    # `zip2` first in that overlap case so the source value survives long enough
-    # for the matching `zip1`.
+    # Emit `zip2` first when dst0 aliases an input so the later `zip1` still sees the original source.
     if dst1 is None:
         return f"zip1      {dst0}.h, {low_tmp}.h, {high_tmp}.h\n"
     if dst0 in {low_tmp, high_tmp}:
@@ -90,6 +93,7 @@ def _gen_zip_pair(dst0, dst1, low_tmp, high_tmp):
 
 
 def _gen_ext_contiguous_head(ctx, base, stride, tmp_base, role, dst, low_tmp, high_tmp):
+    # Materialize the first contiguous ext lane as one logical operand with a plain `zip1`.
     pred = _pred(ctx, role)
     code_str = f""
     code_str += _zip_ext_predicate(ctx, role)
@@ -101,6 +105,7 @@ def _gen_ext_contiguous_head(ctx, base, stride, tmp_base, role, dst, low_tmp, hi
 
 
 def _gen_ext_contiguous_head_pair_fast(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
+    # Materialize the first contiguous same-role pair as two operands with one load pair plus `zip1+zip2`.
     code_str = f""
     pred_pre, pred, pred_post = _fast_pair_predicate(ctx, role0, role1)
     code_str += pred_pre
@@ -113,24 +118,26 @@ def _gen_ext_contiguous_head_pair_fast(ctx, base, stride, tmp_base, role0, role1
 
 
 def _gen_ext_contiguous_head_pair_safe(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
+    # Fall back to two independent lane loads when the head pair is not eligible for fast pairing.
     code_str = _gen_ext_contiguous_head(ctx, base, stride, tmp_base, role0, dst0, low_tmp, high_tmp)
     code_str += _gen_ext_contiguous_lane(ctx, base, tmp_base, role1, dst1, 1, low_tmp, high_tmp)
     return code_str
 
 
 def _gen_ext_contiguous_head_pair(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
+    # The head pair dispatcher only upgrades same-role chunks and leaves mixed chunks on the safe path.
     if role0 == role1:
         return _gen_ext_contiguous_head_pair_fast(
             ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp
         )
-    # Mixed-role head pairs are intentionally kept on the safe path. The plan
-    # layer only upgrades same-role chunks to paired execution.
+    # Mixed-role head pairs stay safe because `main + tail` exact tiles were the main correctness failure mode.
     return _gen_ext_contiguous_head_pair_safe(
         ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp
     )
 
 
 def _gen_ext_contiguous_lane_fast_pair(ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None):
+    # Load one later contiguous lane pair from the same logical role and shape it with `zip1+zip2`.
     code_str = f""
     pred_pre, pred, pred_post = _fast_pair_predicate(ctx, role, next_role if next_dst is not None else None)
     code_str += pred_pre
@@ -143,12 +150,14 @@ def _gen_ext_contiguous_lane_fast_pair(ctx, base, paired_base, role, dst, lane, 
 
 
 def _gen_ext_contiguous_lane_pair_safe(ctx, base, paired_base, role0, role1, dst0, dst1, lane, low_tmp, high_tmp):
+    # Reuse the scalar lane loader twice when a later pair cannot safely share one paired load.
     code_str = _gen_ext_contiguous_lane(ctx, base, paired_base, role0, dst0, lane, low_tmp, high_tmp)
     code_str += _gen_ext_contiguous_lane(ctx, base, paired_base, role1, dst1, lane + 1, low_tmp, high_tmp)
     return code_str
 
 
 def _gen_ext_contiguous_lane(ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None):
+    # This is the main lane materializer for ext contiguous paths after the first head load.
     if next_dst is None:
         pred = _pred(ctx, role)
         code_str = f""
@@ -159,8 +168,7 @@ def _gen_ext_contiguous_lane(ctx, base, paired_base, role, dst, lane, low_tmp, h
         code_str += f"zip1      {dst}.h, {low_tmp}.h, {high_tmp}.h\n"
         return code_str
     if next_dst is not None and next_role != role:
-        # `main + tail` and other mixed-role lane pairs are stable only as two
-        # independent loads. Keep them out of the paired fast path.
+        # Mixed-role lane pairs stay scalar because pairing them reintroduced `mov/ext/orr` fixup bugs.
         return _gen_ext_contiguous_lane_pair_safe(
             ctx, base, paired_base, role, next_role, dst, next_dst, lane, low_tmp, high_tmp
         )
@@ -170,6 +178,7 @@ def _gen_ext_contiguous_lane(ctx, base, paired_base, role, dst, lane, low_tmp, h
 
 
 def _gen_ext_contiguous_last_k_fast_pair(ctx, base, role, dst, lane, low_tmp, zero_tmp, next_dst=None, next_role=None):
+    # The last-k fast path still pairs only one real load because the missing half is synthesized from zero.
     code_str = f""
     pred_pre, pred, pred_post = _paired_ext_predicate(ctx, role, next_role if next_dst is not None else None)
     code_str += pred_pre
@@ -187,12 +196,14 @@ def _gen_ext_contiguous_last_k_fast_pair(ctx, base, role, dst, lane, low_tmp, ze
 
 
 def _gen_ext_contiguous_last_k_pair_safe(ctx, base, role0, role1, dst0, dst1, lane, low_tmp, zero_tmp):
+    # Last-k mixed pairs are emitted as two safe scalar loads to avoid partial-lane pairing mistakes.
     code_str = _gen_ext_contiguous_last_k(ctx, base, role0, dst0, lane, low_tmp, zero_tmp)
     code_str += _gen_ext_contiguous_last_k(ctx, base, role1, dst1, lane + 1, low_tmp, zero_tmp)
     return code_str
 
 
 def _gen_ext_contiguous_last_k(ctx, base, role, dst, lane, low_tmp, zero_tmp, next_dst=None, next_role=None):
+    # Last-k loads mirror the contiguous path but always zip against zero instead of a real high half.
     if next_dst is None:
         pred = _pred(ctx, role)
         code_str = f""
@@ -215,6 +226,7 @@ def _gen_ext_contiguous_last_k(ctx, base, role, dst, lane, low_tmp, zero_tmp, ne
 
 
 def _gen_non_ext_contiguous(load_inst, ctx, base, role, dst, lane):
+    # FP32 contiguous loads are already naturally aligned, so they never need the ext zip shaping machinery.
     suffix = get_ld_element_suffix(ctx)
     pred = _load_predicate(ctx, role)
     if lane == 0:
@@ -223,6 +235,7 @@ def _gen_non_ext_contiguous(load_inst, ctx, base, role, dst, lane):
 
 
 def _gen_ext_gather_pair(ctx, base, role, index_vec, dst, low_tmp, high_tmp, pair_base, next_dst=None, next_role=None):
+    # Gather paths keep their older zip/uzp shaping, but they are no longer part of the small paired fast policy.
     if next_dst is None:
         code_str = f""
         code_str += _zip_ext_predicate(ctx, role)
@@ -257,6 +270,7 @@ def _gen_ext_gather_pair(ctx, base, role, index_vec, dst, low_tmp, high_tmp, pai
 
 
 def _gen_ext_gather_last_k(ctx, base, role, index_vec, dst, low_tmp, zero_tmp, next_dst=None, next_role=None):
+    # Gather last-k is the conservative zero-extended version of the gather loader above.
     if next_dst is None:
         return (
             _zip_ext_predicate(ctx, role)
@@ -281,12 +295,14 @@ def _gen_ext_gather_last_k(ctx, base, role, index_vec, dst, low_tmp, zero_tmp, n
 
 
 def _gen_non_ext_gather(load_inst, ctx, base, role, index_vec, dst):
+    # FP32 gather paths stay as direct vector gathers with no extra shaping.
     suffix = get_ld_element_suffix(ctx)
     pred = _load_predicate(ctx, role)
     return f"{load_inst}      {dst}{suffix}, {pred}, [{base}, {index_vec}.s, UXTW]\n"
 
 
 def _gen_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None):
+    # Choose the A-side head loader from contiguous/gather and ext/non-ext mode for the active transpose model.
     regs = ctx.registers
     if config.a_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
@@ -315,9 +331,7 @@ def _gen_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None):
             )
         return _gen_non_ext_contiguous(ldaopt, ctx, regs.pointers.pA0, role, a0, 0)
     if ctx.is_ext_precision():
-        # Gather-based paths stay conservative in the unified scheme. They still
-        # use zip/uzp shaping internally, but they do not participate in the
-        # small-kernel paired fast path.
+        # Gather-based A paths still shape data with zip/uzp, but they never opt into paired fast execution.
         return _gen_ext_gather_pair(
             ctx,
             regs.pointers.pA0,
@@ -332,6 +346,7 @@ def _gen_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None):
 
 
 def _gen_b_head(ctx, config, b0, role, ldopt, next_dst=None, next_role=None):
+    # Choose the B-side head loader with the same policy, but using B-specific temporaries and strides.
     regs = ctx.registers
     if config.b_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
@@ -374,6 +389,7 @@ def _gen_b_head(ctx, config, b0, role, ldopt, next_dst=None, next_role=None):
 
 
 def _gen_gather_base_setup(target, registers, lane, is_a):
+    # Later gather lanes need an adjusted base pointer because the index vector itself always starts from zero.
     if lane == 0:
         return ""
     base = registers.pointers.pA0 if is_a else registers.pointers.pB0
@@ -382,12 +398,14 @@ def _gen_gather_base_setup(target, registers, lane, is_a):
 
 
 def _gather_base_register(registers, lane, is_a):
+    # Pick either the original base or the pre-shifted gather base depending on which lane is being loaded.
     if lane == 0:
         return registers.pointers.pA0 if is_a else registers.pointers.pB0
     return registers.pointers.pAn if is_a else registers.pointers.pBn
 
 
 def _gen_a_last_k(ctx, config, a_reg, role, lane, next_reg=None, next_role=None):
+    # Last-k A loads reuse the normal path selection but replace the missing high half with zero.
     regs = ctx.registers
     if config.a_mode == LOAD_CONTIGUOUS:
         return _gen_ext_contiguous_last_k(
@@ -413,6 +431,7 @@ def _gen_a_last_k(ctx, config, a_reg, role, lane, next_reg=None, next_role=None)
 
 
 def _gen_b_last_k(ctx, config, b_reg, role, lane, next_reg=None, next_role=None):
+    # Last-k B loads mirror A but route through the B-side temporaries and gather index.
     regs = ctx.registers
     if config.b_mode == LOAD_CONTIGUOUS:
         return _gen_ext_contiguous_last_k(
@@ -438,10 +457,12 @@ def _gen_b_last_k(ctx, config, b_reg, role, lane, next_reg=None, next_role=None)
 
 
 def _gen_gather_base(target, registers, lane, is_a):
+    # Keep one small wrapper so the lane loaders can treat gather base setup as a single step.
     return _gen_gather_base_setup(target, registers, lane, is_a)
 
 
 def _gen_a_lane(ctx, config, dst, role, lane, ldaopt, next_dst=None, next_role=None):
+    # Load later A lanes after the head, preserving the same contiguous/gather and fast/safe policy.
     regs = ctx.registers
     if config.a_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
@@ -477,6 +498,7 @@ def _gen_a_lane(ctx, config, dst, role, lane, ldaopt, next_dst=None, next_role=N
 
 
 def _gen_b_lane(ctx, config, dst, role, lane, ldopt, next_dst=None, next_role=None):
+    # Load later B lanes after the head, again reusing the same policy decisions as the A path.
     regs = ctx.registers
     if config.b_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
@@ -512,6 +534,7 @@ def _gen_b_lane(ctx, config, dst, role, lane, ldopt, next_dst=None, next_role=No
 
 
 def _gen_small_svindex(ctx, config):
+    # Small gather models precompute one stride-scaled index vector per side before entering the tile loops.
     regs = ctx.registers
     shift = get_element_size_shift(ctx)
     code_str = f""
@@ -527,6 +550,7 @@ def _gen_small_svindex(ctx, config):
 
 
 def _gen_small_n_pre(ctx):
+    # Reset the A/B walking pointers at the start of each outer N tile.
     regs = ctx.registers
     code_str = f""
     code_str += f"mov     {regs.pointers.pAt}, {regs.params.origPA}\n"
@@ -535,6 +559,7 @@ def _gen_small_n_pre(ctx):
 
 
 def _gen_small_n_post(ctx, config):
+    # Advance the persistent B pointer by the actual N chunk that just finished.
     regs = ctx.registers
     shift = get_element_size_shift(ctx)
     if config.b_mode == LOAD_GATHER:
@@ -546,6 +571,7 @@ def _gen_small_n_post(ctx, config):
 
 
 def _gen_small_m_pre(ctx, config):
+    # Rebuild the live A/B pointers and scaled offsets for each inner M chunk.
     regs = ctx.registers
     shift = get_element_size_shift(ctx)
     code_str = f""
@@ -565,6 +591,7 @@ def _gen_small_m_pre(ctx, config):
 
 
 def _gen_small_m_post(ctx, config):
+    # Advance the persistent A pointer by the actual M chunk that just finished.
     regs = ctx.registers
     shift = get_element_size_shift(ctx)
     if config.a_mode == LOAD_GATHER:
@@ -588,9 +615,7 @@ class SmallModelConfig:
 class SmallGemmModel:
     config: SmallModelConfig
 
-    # `SmallGemmModel` is the transpose-specific facade used by the plan layer.
-    # It exposes a uniform "load lane i" API while hiding whether that lane is
-    # contiguous or gather-backed on each side.
+    # `SmallGemmModel` gives the plan layer one uniform API while hiding transpose-specific load mechanics.
 
     def load_a0b0(self, ctx, a0, a_role, b0, b_role, ldopt, ldaopt, a1=None, b1=None, a1_role=None, b1_role=None):
         code_str = _gen_a_head(ctx, self.config, a0, a_role, ldaopt, next_dst=a1, next_role=a1_role)
@@ -655,6 +680,7 @@ class SmallGemmModel:
 
 
 class GeneralGemmModel:
+    # `GeneralGemmModel` keeps the older straightforward schedule used outside the specialized small path.
     def load_a0b0(self, ctx, a0, a_role, b0, b_role, ldopt, ldaopt, a1=None, b1=None, a1_role=None, b1_role=None):
         regs = ctx.registers
         if ctx.is_ext_precision():
@@ -696,6 +722,7 @@ class GeneralGemmModel:
         return ctx.registers.vectors.b_high
 
     def _gen_general_a(self, ctx, dst, role, lane, ldaopt, next_dst=None, next_role=None):
+        # General A loads use fixed MUL VL offsets instead of the chunk-aware small-kernel loaders.
         regs = ctx.registers
         if ctx.is_ext_precision():
             low_offset = lane * 2
@@ -717,6 +744,7 @@ class GeneralGemmModel:
         return f"{ldaopt}     {dst}{get_ld_element_suffix(ctx)}, {_load_predicate(ctx, role)}, [{regs.pointers.pA0}, #{lane}, MUL VL]\n"
 
     def _gen_general_b(self, ctx, dst, role, lane, ldopt, next_dst=None, next_role=None):
+        # General B loads mirror general A and keep the old simple paired-via-offset schedule.
         regs = ctx.registers
         if ctx.is_ext_precision():
             low_offset = lane * 2

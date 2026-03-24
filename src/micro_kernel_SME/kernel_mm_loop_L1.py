@@ -1,13 +1,11 @@
 from global_config import get_predicate_suffix, get_whilelt_increment, tile_size_from_vl
 from kernel_mm_loop_L2 import kernel_mm_loop_L2
 
-# L1 is the outer N loop. Its job is to:
-# - determine how many N elements remain
-# - choose the biggest legal N chunk for this tile
-# - hand the chosen `nvl` shape to L2, which will walk M for that chunk
+# L1 is the outer N loop that measures the remaining columns, chooses the widest legal `nvl`, and hands that chunk to L2.
 
 
 def _gen_primary_n_predicate(ctx):
+    # Build the first N predicate for the candidate chunk, using `ptrue` for ext paths and `whilelt` for scalar-sized paths.
     regs = ctx.registers
     if ctx.is_ext_precision():
         return f"ptrue   {regs.predicates.n_main}.h, vl16\n"
@@ -15,6 +13,7 @@ def _gen_primary_n_predicate(ctx):
 
 
 def _gen_n_loop_block(ctx, multiplier, m_size):
+    # Emit one N-width candidate block that falls through to the next narrower width when the remainder is too small.
     regs = ctx.registers
     next_label = f".loops_of_l1_{multiplier - 1}vl" if multiplier > 2 else ".loops_of_l1_1vl"
     threshold = tile_size_from_vl(multiplier - 1)
@@ -35,6 +34,7 @@ def _gen_n_loop_block(ctx, multiplier, m_size):
 
 
 def _gen_n_loop_condition(ctx, n_size):
+    # Recompute the live N remainder after one tile so the next outer-loop iteration sees the exact columns still pending.
     regs = ctx.registers
     multiplier = n_size // tile_size_from_vl(1)
     code_str = f""
@@ -50,9 +50,7 @@ def _gen_n_loop_condition(ctx, n_size):
         code_str += f"b.first     .loops_of_n\n"
     elif multiplier == 3:
         code_str += f"whilelt     {regs.predicates.n_main}.h, {regs.counters.counterJ}, {regs.dims.origN}\n"
-        # A 3VL tile is emitted as a 2VL main chunk plus a 1VL tail chunk.
-        # The tail predicate therefore has to start at the logical 2VL boundary,
-        # not at a single-VL step from counterJ.
+        # A `3VL` tile is materialized as `2VL main + 1VL tail`, so the tail predicate must start at the logical `2VL` boundary.
         code_str += f"add         {regs.counters.TMP_CNT}, {regs.counters.counterJ}, #{tile_size_from_vl(2)}\n"
         code_str += f"whilelt     {regs.predicates.n_tail}.s, {regs.counters.TMP_CNT}, {regs.dims.origN}\n"
         code_str += f"sub     {regs.dims.MIN_N}, {regs.dims.MIN_N}, {regs.dims.MIN_N}\n"
@@ -70,6 +68,7 @@ def _gen_n_loop_condition(ctx, n_size):
 
 
 def kernel_mm_loop_n(ctx, n_size=None, m_size=None):
+    # Enter the outer N loop, seed the original dimensions, and dispatch from the widest legal N candidate down to the universal `1VL` fallback.
     regs = ctx.registers
     spec = ctx.spec
     if n_size is None:
@@ -86,9 +85,7 @@ def kernel_mm_loop_n(ctx, n_size=None, m_size=None):
     code_str += f"sub     {regs.counters.counterI}, {regs.counters.counterI}, {regs.counters.counterI}\n"
     code_str += ctx.model.kernel_mm_loop_n_pre_func(ctx)
 
-    # The tile legality rule is `m_vl * n_vl <= 4`, so N can only have at most
-    # one 4VL/3VL/2VL candidate. We branch from wide to narrow and fall through
-    # to 1VL as the universal fallback.
+    # The legality rule `m_vl * n_vl <= 4` means we only need to test one 4VL, 3VL, or 2VL branch before falling back to `1VL`.
     vl1 = tile_size_from_vl(1)
     vl2 = tile_size_from_vl(2)
     vl3 = tile_size_from_vl(3)

@@ -20,9 +20,7 @@ from kernel_asm import (
     kernel_4VL_1VL_last_k,
 )
 
-# This layer is the bridge between loop code and the concrete kernel emitter.
-# It maps a logical tile shape such as `2VL x 2VL` to the right assembly helper
-# and also defines the repeated eight-variant K body used by `kernel_bc`.
+# This layer bridges the loop nest and the tile emitter by mapping each logical `mvl x nvl` shape to its concrete kernel helper.
 
 
 KERNEL_FUN_MAP = {
@@ -49,11 +47,13 @@ KERNEL_FUN_MAP_LAST_K = {
 
 
 def _get_kernel_fn(mvl, nvl, last_k=False):
+    # Select the regular or last-k kernel table without making the callers repeat the map choice.
     kernel_map = KERNEL_FUN_MAP_LAST_K if last_k else KERNEL_FUN_MAP
     return kernel_map[(mvl, nvl)]
 
 
 def _gen_kernel_variant(ctx, variant_idx, mvl, nvl, last_k=False, load_inst=None):
+    # Materialize one register-variant copy of the kernel body, optionally forcing a specific load opcode.
     kernel_fn = _get_kernel_fn(mvl, nvl, last_k=last_k)
     variant = ctx.registers.kernel_variant(variant_idx)
     if load_inst is None:
@@ -62,6 +62,7 @@ def _gen_kernel_variant(ctx, variant_idx, mvl, nvl, last_k=False, load_inst=None
 
 
 def _kernel_load_inst(ctx):
+    # Pick the streaming or non-streaming load form that matches the active precision and small/general model.
     if ctx.is_ext_precision():
         return LD1_H if ctx.spec.gemm_type is GemmType.SMALL else LDNT1_H
     return LD1 if ctx.spec.gemm_type is GemmType.SMALL else LDNT1
@@ -69,8 +70,7 @@ def _kernel_load_inst(ctx):
 
 def _gen_kernel_bc(ctx, mvl, nvl, last_k=False, load_inst=None):
     code_parts = []
-    # Each K block reuses the same four register variants twice. This matches
-    # the original handwritten schedule and keeps the generated body regular.
+    # Reusing the four register variants twice matches the handwritten K-body cadence and keeps scheduling regular.
     for variant_idx in (0, 1, 2, 3, 0, 1, 2, 3):
         code_parts.append(_gen_kernel_variant(ctx, variant_idx, mvl, nvl, last_k=last_k, load_inst=load_inst))
     return "".join(code_parts)
