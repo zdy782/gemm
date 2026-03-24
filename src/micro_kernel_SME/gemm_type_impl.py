@@ -192,23 +192,13 @@ def _emit_ext_contiguous_lane(ctx, base, paired_base, role, dst, lane, low_tmp, 
         code_str += f"zip1      {dst}.h, {low_tmp}.h, {high_tmp}.h\n"
         return code_str
     if next_dst is not None and next_role != role:
-        full_code = _emit_ext_contiguous_lane_fast_pair(
-            ctx,
-            base,
-            paired_base,
-            role,
-            dst,
-            lane,
-            low_tmp,
-            high_tmp,
-            next_dst=next_dst,
-            next_role=role,
-        )
-        full_code += _zip_ext_predicate(ctx, next_role)
-        partial_code = _emit_ext_contiguous_lane_pair_safe(
+        # Mixed main/tail lane pairs are still not numerically stable under
+        # repeated 1VLx4VL execution on QEMU and real hardware. Keep the first
+        # same-role pair fast, but materialize the mixed second pair with the
+        # safe single-lane path.
+        return _emit_ext_contiguous_lane_pair_safe(
             ctx, base, paired_base, role, next_role, dst, next_dst, lane, low_tmp, high_tmp
         )
-        return _emit_runtime_pair_select(ctx, role, tile_size_from_vl(lane + 2), full_code, partial_code)
     return _emit_ext_contiguous_lane_fast_pair(
         ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=next_dst, next_role=next_role
     )

@@ -259,8 +259,14 @@ FAST_EXT_LAST_K_PLANS = FAST_EXT_KERNEL_PLANS
 
 
 _SMALL_FAST_PLAN_KEYS = {
-    "small_nt": {"4VL_1VL", "3VL_1VL", "1VL_3VL", "2VL_2VL", "1VL_2VL", "2VL_1VL"},
-    "small_nn": {"4VL_1VL", "3VL_1VL", "2VL_2VL", "2VL_1VL"},
+    # Keep only the N-side fast chunks that are numerically stable. 1VL_4VL
+    # still regresses on large exact and odd-tail NT cases, so leave it on the
+    # safe single-operand path for now.
+    "small_nt": {"1VL_3VL", "1VL_2VL"},
+    # NN large exact 2x2/4x1 paths still fail under repeated paired execution.
+    # Fall back to the safe single-operand path there until the mixed A-side
+    # pairing is fixed correctly.
+    "small_nn": set(),
     # TT only keeps the widest B-side fast chunk; 1VL_2VL still regresses
     # into the mixed/tail path in M-remainder loops and is not a net win.
     "small_tt": {"1VL_3VL"},
