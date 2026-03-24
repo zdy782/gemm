@@ -20,6 +20,10 @@ from kernel_asm import (
     kernel_4VL_1VL_last_k,
 )
 
+# This layer is the bridge between loop code and the concrete kernel emitter.
+# It maps a logical tile shape such as `2VL x 2VL` to the right assembly helper
+# and also defines the repeated eight-variant K body used by `kernel_bc`.
+
 
 KERNEL_FUN_MAP = {
     ("4VL", "1VL"): kernel_4VL_1VL,
@@ -65,6 +69,8 @@ def _kernel_load_inst(ctx):
 
 def _emit_kernel_bc(ctx, mvl, nvl, last_k=False, load_inst=None):
     code_parts = []
+    # Each K block reuses the same four register variants twice. This matches
+    # the original handwritten schedule and keeps the generated body regular.
     for variant_idx in (0, 1, 2, 3, 0, 1, 2, 3):
         code_parts.append(_emit_kernel_variant(ctx, variant_idx, mvl, nvl, last_k=last_k, load_inst=load_inst))
     return "".join(code_parts)

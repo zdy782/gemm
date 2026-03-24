@@ -4,6 +4,7 @@ from laf_asm_code import laf_asm_code
 from model_spec import GenerationContext, KernelSpec
 from register_plan import DEFAULT_REGISTER_PLAN
 
+
 def generate_sme_asm(
     M: int,
     N: int,
@@ -19,7 +20,7 @@ def generate_sme_asm(
     m_vl: int = 1,
     n_vl: int = 4,
 ):
-    """Generate .S assembly file for SME GEMM kernel
+    """Generate the final `.S` text for one concrete SME kernel.
 
     Args:
         M (int): M
@@ -41,6 +42,11 @@ def generate_sme_asm(
     """
     func_name = f"gemm_{M}x{N}x{K}_{lda}_{ldb}_{ldc}_{uniq_id}"
 
+    # The generator pipeline is:
+    # 1. normalize CLI-like inputs into an immutable spec
+    # 2. resolve the transpose-specific load model
+    # 3. hand the context to `laf_asm_code`, which emits the loop nest and
+    #    per-tile kernels
     spec = KernelSpec.from_args(
         M,
         N,
@@ -63,6 +69,8 @@ def generate_sme_asm(
         return ""
     
     return kernel_code
+
+
 def generate_sme_test_cpp(
     M: int,
     N: int,

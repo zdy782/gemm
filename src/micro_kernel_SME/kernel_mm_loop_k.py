@@ -11,6 +11,11 @@ from kernel_save import (
     kernel_save_c_4VL_1VL,
 )
 
+# The K loop has three responsibilities:
+# - run the repeated full K blocks (`kernel_bc`)
+# - run the ext-precision odd-K remainder (`kernel_m0_last_k`)
+# - save ZA back to C once the whole K dimension is consumed
+
 
 KERNEL_SAVE_FUN_MAP = {
     ("4VL", "1VL"): kernel_save_c_4VL_1VL,
@@ -33,6 +38,9 @@ def kernel_mm_loop_k_LU(ctx, label, kernel, kernel_last_k, cnt, mvl, nvl):
     code_str = f""
     code_str += f".{label}_{mvl}_{nvl}_k:\n"
     if ctx.is_ext_precision():
+        # Ext kernels accumulate two K elements per inner step. When the final
+        # remaining chunk is a single element, jump to the dedicated last-k
+        # loader instead of trying to reuse the normal paired body.
         code_str += f"cmp      {cnt}, #1\n"
         code_str += f"bne      .{label}_{mvl}_{nvl}_k_normal\n"
         code_str += f"tst      {regs.dims.origK}, #1\n"
@@ -64,6 +72,8 @@ def kernel_mm_loop_kk(ctx, k_loop_label, mvl, nvl, kernel_bc_fn, kernel_mm_label
 def kernel_mm_loop_k(ctx, label, mvl, nvl):
     regs = ctx.registers
     code_str = f""
+    # `wbk` counts the full K blocks handled by the fixed kernel body. The
+    # remainder path below only runs when `origK` leaves a partial block.
     code_str += f"lsr      {regs.counters.wbk}, {regs.dims.origK}, #{get_k_loop_shift(ctx)}\n"
     code_str += f"sub      {regs.counters.TMP_CNT}, {regs.dims.origM}, {regs.counters.counterI}\n"
     code_str += f"cmp      {regs.counters.TMP_CNT}, {regs.dims.MIN_M}\n"

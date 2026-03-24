@@ -1,6 +1,11 @@
 from global_config import get_predicate_suffix, get_whilelt_increment, tile_size_from_vl
 from kernel_mm_loop_L2 import kernel_mm_loop_L2
 
+# L1 is the outer N loop. Its job is to:
+# - determine how many N elements remain
+# - choose the biggest legal N chunk for this tile
+# - hand the chosen `nvl` shape to L2, which will walk M for that chunk
+
 
 def _emit_primary_n_predicate(ctx):
     regs = ctx.registers
@@ -31,7 +36,6 @@ def _emit_n_loop_block(ctx, multiplier, m_size):
 
 def _emit_n_loop_condition(ctx, n_size):
     regs = ctx.registers
-    increment = get_whilelt_increment(ctx)
     multiplier = n_size // tile_size_from_vl(1)
     code_str = f""
     if multiplier == 1:
@@ -82,6 +86,9 @@ def kernel_mm_loop_n(ctx, n_size=None, m_size=None):
     code_str += f"sub     {regs.counters.counterI}, {regs.counters.counterI}, {regs.counters.counterI}\n"
     code_str += ctx.model.kernel_mm_loop_n_pre_func(ctx)
 
+    # The tile legality rule is `m_vl * n_vl <= 4`, so N can only have at most
+    # one 4VL/3VL/2VL candidate. We branch from wide to narrow and fall through
+    # to 1VL as the universal fallback.
     vl1 = tile_size_from_vl(1)
     vl2 = tile_size_from_vl(2)
     vl3 = tile_size_from_vl(3)

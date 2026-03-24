@@ -1,6 +1,10 @@
 from global_config import get_predicate_suffix, tile_size_from_vl
 from kernel_mm_loop_k import kernel_mm_loop_k
 
+# L2 is the inner M loop nested under L1's chosen N chunk. It mirrors the L1
+# structure: pick the widest legal M chunk, then dispatch to the K loop for the
+# concrete `mvl x nvl` kernel body.
+
 
 def _emit_m_count_init(ctx, m_size):
     regs = ctx.registers
@@ -69,6 +73,8 @@ def kernel_mm_loop_L2(ctx, m_size, label, nvl):
     code_str += f"b    .cond_of_loops_m_{nvl}_{label}\n"
     code_str += f".loops_of_m_{nvl}_{label}:\n"
     code_str += f"zero     {{za0.b}}\n"
+    # `MIN_M` is recomputed per M iteration because the last M chunk may be
+    # smaller than the logical tile even when the selected `mvl` shape is wide.
     code_str += f"sub      {regs.dims.MIN_M}, {regs.dims.MIN_M}, {regs.dims.MIN_M}\n"
     code_str += _emit_m_count_init(ctx, m_size)
     code_str += ctx.model.kernel_mm_loop_m_pre_func(ctx)

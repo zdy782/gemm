@@ -2,6 +2,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+# `KernelSpec` is the generator's immutable input contract. Everything below
+# the CLI layer should read shape, transpose, precision, and tile choices from
+# this object instead of carrying ad-hoc argument lists.
 
 class Precision(str, Enum):
     FP32 = "fp32"
@@ -100,6 +103,11 @@ class GenerationContext:
     registers: Any
     model: Any
 
+    # The context keeps the three axes of codegen state together:
+    # - `spec`: what kernel to generate
+    # - `registers`: which architectural names each layer should use
+    # - `model`: how A/B are loaded for the selected transpose family
+
     def is_fp32(self) -> bool:
         return self.spec.is_fp32()
 
@@ -113,4 +121,6 @@ class GenerationContext:
         return self.spec.is_ext_precision()
 
     def use_ext_paired_fast_path(self) -> bool:
+        # The unified zip1+zip2 path is only meaningful for small ext-precision
+        # kernels. `fp32` and `general` keep their own loading strategy.
         return self.spec.gemm_type is GemmType.SMALL and self.spec.is_ext_precision()
