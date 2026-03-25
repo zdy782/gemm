@@ -1,4 +1,4 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -113,28 +113,6 @@ class KernelSpec:
         if self.is_fp16():
             return "shgemm"
         return "sgemm"
-
-    def packed_lda(self) -> int:
-        return self.M if self.trans_a is Transpose.NORMAL else self.K
-
-    def packed_ldb(self) -> int:
-        return self.K if self.trans_b is Transpose.NORMAL else self.N
-
-    def packed_a_cols(self) -> int:
-        return self.K if self.trans_a is Transpose.NORMAL else self.M
-
-    def packed_b_cols(self) -> int:
-        return self.N if self.trans_b is Transpose.NORMAL else self.K
-
-    def as_kernel_spec(self) -> "KernelSpec":
-        if not self.is_packed():
-            return self
-        return replace(
-            self,
-            lda=self.packed_lda(),
-            ldb=self.packed_ldb(),
-        )
-
 
 @dataclass(frozen=True)
 class GenerationContext:

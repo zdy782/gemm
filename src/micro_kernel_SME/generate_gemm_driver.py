@@ -15,7 +15,7 @@ def _precision_types(spec):
     return "float", "float", ""
 
 
-def _driver_kernel_call(spec, kernel_func_name, a_ptr, b_ptr, c_ptr, lda_name, ldb_name, ldc_name):
+def _driver_kernel_call(kernel_func_name, a_ptr, b_ptr, c_ptr, lda_name, ldb_name, ldc_name):
     return (
         f"{kernel_func_name}(minI, minJ, minL, {a_ptr}, {b_ptr}, {c_ptr}, "
         f"{lda_name}, {ldb_name}, {ldc_name});"
@@ -123,7 +123,7 @@ extern "C" int {driver_func_name}(const long M, const long N, const long K, cons
                     minI = {GEMM_P};
                 }}
                 {a_copy_code}
-                {_driver_kernel_call(spec, kernel_func_name, "sa", "sb", "C + is + js * ldc", "lda_kernel", "ldb_kernel", "ldc")}
+                {_driver_kernel_call(kernel_func_name, "sa", "sb", "C + is + js * ldc", "lda_kernel", "ldb_kernel", "ldc")}
                 is += minI;
             }}
             ls += minL;

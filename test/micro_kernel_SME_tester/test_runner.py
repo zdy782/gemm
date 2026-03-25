@@ -84,7 +84,7 @@ def run_single_test(
         with open(os.path.join(test_path, "driver.cpp"), "w") as f:
             f.write(driver_code)
 
-        makefile = generate_makefile(data_type, pack_mode)
+        makefile = generate_makefile(data_type)
         with open(os.path.join(test_path, "Makefile"), "w") as f:
             f.write(makefile)
 

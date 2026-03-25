@@ -110,11 +110,6 @@ def generate_test_cases_by_trans() -> List[Dict]:
 
     return final_cases
 
-# Added data_type parameter to dynamically set precision type
-def run_test_case(case: Dict, m_vl: int, n_vl: int, data_type: str) -> float:
-    return run_test_case_with_mode(case, m_vl, n_vl, data_type, "nopack")
-
-
 def run_test_case_with_mode(case: Dict, m_vl: int, n_vl: int, data_type: str, pack_mode: str) -> float:
     m, n, k = case["m"], case["n"], case["k"]
     ta, tb = case["transa"], case["transb"]
