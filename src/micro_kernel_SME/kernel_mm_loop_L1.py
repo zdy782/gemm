@@ -100,15 +100,11 @@ def _gen_n_loop_condition(ctx, n_size):
 def kernel_mm_loop_n(ctx, n_size=None, m_size=None):
     # Enter the outer N loop, seed the original dimensions, and dispatch from the widest legal N candidate down to the universal `1VL` fallback.
     regs = ctx.registers
-    spec = ctx.spec
     if n_size is None:
         n_size = tile_size_from_vl(2)
     if m_size is None:
         m_size = tile_size_from_vl(2)
     code_str = f""
-    code_str += f"mov  {regs.dims.origM}, #{spec.M}\n"
-    code_str += f"mov  {regs.dims.origN}, #{spec.N}\n"
-    code_str += f"mov  {regs.dims.origK}, #{spec.K}\n"
     code_str += f"b   .cond_of_loops_n      // A矩阵预取\n"
     code_str += f".loops_of_n:\n"
     code_str += f"mov     {regs.pointers.pC0}, {regs.params.pC}\n"

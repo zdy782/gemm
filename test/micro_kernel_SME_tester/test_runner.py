@@ -31,13 +31,14 @@ def run_single_test(
     data_type="fp32",
     m_vl=1,
     n_vl=4,
+    pack_mode="nopack",
     verbose=True,
     keep_tmp=False,
 ):
     """Run the full workflow for a single test case."""
     current_path = setup_environment()
 
-    from generate_sme_test import generate_sme_asm, generate_sme_test_cpp
+    from generate_sme_test import generate_sme_asm, generate_sme_driver_cpp, generate_sme_test_cpp
     from generate_makefile import generate_makefile
     from global_config import assert_valid_tile_combo
 
@@ -52,7 +53,7 @@ def run_single_test(
 
     try:
         asm_code = generate_sme_asm(
-            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, data_type, m_vl, n_vl
+            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, data_type, m_vl, n_vl, pack_mode
         )
         if not asm_code:
             if verbose:
@@ -63,7 +64,7 @@ def run_single_test(
             f.write(asm_code)
 
         cpp_code = generate_sme_test_cpp(
-            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, repeat, data_type, m_vl, n_vl
+            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, repeat, data_type, m_vl, n_vl, pack_mode
         )
         if not cpp_code:
             if verbose:
@@ -73,7 +74,17 @@ def run_single_test(
         with open(os.path.join(test_path, "test.cpp"), "w") as f:
             f.write(cpp_code)
 
-        makefile = generate_makefile(data_type)
+        driver_code = generate_sme_driver_cpp(
+            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, data_type, m_vl, n_vl, pack_mode
+        )
+        if not driver_code:
+            if verbose:
+                print(f"[ERROR] Failed to generate driver code for M={M}, N={N}, K={K}")
+            return False
+        with open(os.path.join(test_path, "driver.cpp"), "w") as f:
+            f.write(driver_code)
+
+        makefile = generate_makefile(data_type, pack_mode)
         with open(os.path.join(test_path, "Makefile"), "w") as f:
             f.write(makefile)
 

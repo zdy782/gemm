@@ -109,15 +109,6 @@ def _gen_ext_contiguous_head_pair_fast(
     return code_str
 
 
-def _gen_ext_contiguous_head_pair(
-    ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp, load_role1=None
-):
-    # The head pair dispatcher always pairs one contiguous `2VL` chunk and lets the pg state describe whether lane 1 is partial.
-    return _gen_ext_contiguous_head_pair_fast(
-        ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp, load_role1=load_role1
-    )
-
-
 def _gen_ext_contiguous_lane_fast_pair(
     ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None, next_load_role=None
 ):
@@ -296,7 +287,7 @@ def _gen_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None, ne
     if config.a_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
             if ctx.use_ext_paired_fast_path() and next_dst is not None:
-                return _gen_ext_contiguous_head_pair(
+                return _gen_ext_contiguous_head_pair_fast(
                     ctx,
                     regs.pointers.pA0,
                     regs.params.LDA,
@@ -341,7 +332,7 @@ def _gen_b_head(ctx, config, b0, role, ldopt, next_dst=None, next_role=None, nex
     if config.b_mode == LOAD_CONTIGUOUS:
         if ctx.is_ext_precision():
             if ctx.use_ext_paired_fast_path() and next_dst is not None:
-                return _gen_ext_contiguous_head_pair(
+                return _gen_ext_contiguous_head_pair_fast(
                     ctx,
                     regs.pointers.pB0,
                     regs.params.LDB,

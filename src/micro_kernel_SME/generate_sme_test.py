@@ -1,8 +1,21 @@
 from gemm_config import resolve_model
+from generate_gemm_driver import generate_gemm_driver
 from global_config import assert_valid_tile_combo, get_tolerance_value
 from laf_asm_code import laf_asm_code
 from model_spec import GenerationContext, KernelSpec
 from register_plan import DEFAULT_REGISTER_PLAN
+
+
+def _build_symbol_names(spec: KernelSpec, uniq_id: str):
+    trans_suffix = f"{spec.transA.lower()}{spec.transB.lower()}"
+    tile_suffix = f"{spec.tile.m_vl}x{spec.tile.n_vl}"
+    suffix = f"{trans_suffix}_{tile_suffix}_{uniq_id}"
+    prefix = spec.gemm_prefix()
+    return (
+        f"{prefix}_kernel_{suffix}",
+        f"{prefix}_nopack_{suffix}",
+        f"{prefix}_packed_{suffix}",
+    )
 
 
 def generate_sme_asm(
@@ -19,6 +32,7 @@ def generate_sme_asm(
     data_type: str = "fp32",
     m_vl: int = 1,
     n_vl: int = 4,
+    pack_mode: str = "nopack",
 ):
     """Generate the final `.S` text for one concrete SME kernel.
 
@@ -40,8 +54,6 @@ def generate_sme_asm(
     Returns:
         asm_code (str): generated assembly code
     """
-    func_name = f"gemm_{M}x{N}x{K}_{lda}_{ldb}_{ldc}_{uniq_id}"
-
     # The generator pipeline is:
     # 1. normalize CLI-like inputs into an immutable spec
     # 2. resolve the transpose-specific load model
@@ -60,8 +72,10 @@ def generate_sme_asm(
         data_type,
         m_vl,
         n_vl,
+        pack_mode,
     )
     assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
+    func_name, _, _ = _build_symbol_names(spec, uniq_id)
     ctx = GenerationContext(spec=spec, registers=DEFAULT_REGISTER_PLAN, model=resolve_model(spec))
     kernel_code = laf_asm_code(ctx, func_name)
     
@@ -86,6 +100,7 @@ def generate_sme_test_cpp(
     data_type: str = "fp32",
     m_vl: int = 1,
     n_vl: int = 4,
+    pack_mode: str = "nopack",
 ):
     """Generate C++ test file for SME GEMM kernel
 
@@ -121,6 +136,7 @@ def generate_sme_test_cpp(
         data_type,
         m_vl,
         n_vl,
+        pack_mode,
     )
     assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
 
@@ -156,7 +172,8 @@ def generate_sme_test_cpp(
     b_size = b_cols * ldb
     c_size = N * ldc
 
-    func_name = f"gemm_{M}x{N}x{K}_{lda}_{ldb}_{ldc}_{uniq_id}"
+    kernel_func_name, nopack_func_name, packed_func_name = _build_symbol_names(spec, uniq_id)
+    entry_func_name = packed_func_name if spec.is_packed() else nopack_func_name
 
     cc_code = ""
 
@@ -182,7 +199,7 @@ def generate_sme_test_cpp(
 
     # extern declaration
     cc_code += f"""
-extern "C" int {func_name}(const {input_type} *A, const {input_type} *B, {output_type} *C, const int lda, const int ldb, const int ldc);
+extern "C" int {entry_func_name}(const long M, const long N, const long K, const {input_type} *A, const {input_type} *B, {output_type} *C, const long lda, const long ldb, const long ldc);
 """
 
     # test part
@@ -229,12 +246,12 @@ int main()
     int n_loops =64;
 
     for (int i = 0; i < n_warming; ++i) {{
-        {func_name}(A, B, C, lda, ldb, ldc);
+        {entry_func_name}(M, N, K, A, B, C, lda, ldb, ldc);
     }}
 
     Timer t;
     for (int i = 0; i < n_loops; ++i) {{
-        {func_name}(A, B, C, lda, ldb, ldc);
+        {entry_func_name}(M, N, K, A, B, C, lda, ldb, ldc);
     }}
 
     float latency = t.getTime();
@@ -244,7 +261,7 @@ int main()
     // Test ACC=false: C = A * B
     bool ACC = false;
     test_utils::gemm_ref(A, B, refC, M, N, K, lda, ldb, ldc, ACC, transA, transB);
-    {func_name}(A, B, ourC, lda, ldb, ldc);
+    {entry_func_name}(M, N, K, A, B, ourC, lda, ldb, ldc);
     
     if (!test_utils::is_same_matrix(refC, ourC, M, N, ldc, {tol_val}, {tol_val})) {{
         int idx = test_utils::diff_index(refC, ourC, M, N, ldc, {tol_val}, {tol_val});
@@ -266,7 +283,7 @@ int main()
     
     ACC = true;
     test_utils::gemm_ref(A, B, refC, M, N, K, lda, ldb, ldc, ACC, transA, transB);
-    {func_name}(A, B, ourC, lda, ldb, ldc);
+    {entry_func_name}(M, N, K, A, B, ourC, lda, ldb, ldc);
     
     if (!test_utils::is_same_matrix(refC, ourC, M, N, ldc, {tol_val}, {tol_val})) {{
         int idx = test_utils::diff_index(refC, ourC, M, N, ldc, {tol_val}, {tol_val});
@@ -292,3 +309,40 @@ int main()
 }}
 """
     return cc_code
+
+
+def generate_sme_driver_cpp(
+    M: int,
+    N: int,
+    K: int,
+    lda: int,
+    ldb: int,
+    ldc: int,
+    gemm_type: str,
+    transA: str,
+    transB: str,
+    uniq_id: str,
+    data_type: str = "fp32",
+    m_vl: int = 1,
+    n_vl: int = 4,
+    pack_mode: str = "nopack",
+):
+    spec = KernelSpec.from_args(
+        M,
+        N,
+        K,
+        lda,
+        ldb,
+        ldc,
+        gemm_type,
+        transA,
+        transB,
+        data_type,
+        m_vl,
+        n_vl,
+        pack_mode,
+    )
+    assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
+    kernel_func_name, nopack_func_name, packed_func_name = _build_symbol_names(spec, uniq_id)
+    driver_func_name = packed_func_name if spec.is_packed() else nopack_func_name
+    return generate_gemm_driver(spec, kernel_func_name, driver_func_name)

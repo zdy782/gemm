@@ -126,6 +126,33 @@ def PROLOGUE(real_name):
     return code_str
 
 
+def NORMALIZE_RUNTIME_KERNEL_ABI(registers):
+    code_str = f""
+    # Runtime kernels follow the BLAS-style order:
+    #   x0/x1/x2 = M/N/K
+    #   x3/x4/x5 = A/B/C
+    #   x6/x7    = lda/ldb
+    #   [sp]     = ldc (9th integer-class argument)
+    # Internally we keep the historical register contract:
+    #   x0/x1/x2 = A/B/C
+    #   x3/x4/x5 = lda/ldb/ldc
+    #   x6/x7/x8 = M/N/K
+    code_str += f"ldr     x14, [sp]\n"
+    code_str += f"mov     x15, x0\n"
+    code_str += f"mov     x16, x1\n"
+    code_str += f"mov     x17, x2\n"
+    code_str += f"mov     {registers.params.origPA}, x3\n"
+    code_str += f"mov     {registers.params.origPB}, x4\n"
+    code_str += f"mov     {registers.params.pC}, x5\n"
+    code_str += f"mov     {registers.params.LDA}, x6\n"
+    code_str += f"mov     {registers.params.LDB}, x7\n"
+    code_str += f"mov     {registers.params.LDC}, x14\n"
+    code_str += f"mov     {registers.dims.origM}, x15\n"
+    code_str += f"mov     {registers.dims.origN}, x16\n"
+    code_str += f"mov     {registers.dims.origK}, x17\n"
+    return code_str
+
+
 def SAVE_REGS(registers):
     code_str = f""
     code_str += f".align 5\n"

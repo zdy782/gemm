@@ -1,4 +1,5 @@
 from global_config import (
+    NORMALIZE_RUNTIME_KERNEL_ABI,
     PROLOGUE,
     RESTORE_REGS,
     SAVE_REGS,
@@ -15,19 +16,16 @@ def laf_asm_code(ctx, func_name):
     # - prologue / SME enablement
     # - loop state setup
     # - the L1 N loop, which expands into the rest of the nest
-    spec = ctx.spec
     regs = ctx.registers
     code_str = f""
     code_str += PROLOGUE(func_name)
+    code_str += NORMALIZE_RUNTIME_KERNEL_ABI(regs)
     code_str += SAVE_REGS(regs)
     code_str += f"prfm    PLDL1KEEP, [{regs.params.origPA}, #64]      // A矩阵预取\n"
     code_str += f"prfm    PLDL1KEEP, [{regs.params.origPB}, #64]      // B矩阵预取\n"
     code_str += START_SME_FEATURE(regs)
     code_str += f"mov     {regs.pointers.pBt}, {regs.params.origPB}\n"
     code_str += f"mov     {regs.counters.counterJ}, #0\n"
-    code_str += f"mov     {regs.params.LDA}, #{spec.lda}\n"
-    code_str += f"mov     {regs.params.LDB}, #{spec.ldb}\n"
-    code_str += f"mov     {regs.params.LDC}, #{spec.ldc}\n"
     if ctx.is_ext_precision():
         code_str += f"ptrue   {regs.predicates.n_main}.h, all\n"
         code_str += f"pfalse  {regs.predicates.false_all}.b\n"
@@ -40,8 +38,8 @@ def laf_asm_code(ctx, func_name):
 
     # Tiles are stored in logical s-VL units. The loop nest converts those to
     # element counts before branching into the concrete `m_vl x n_vl` kernel.
-    m_size = tile_size_from_vl(spec.tile.m_vl)
-    n_size = tile_size_from_vl(spec.tile.n_vl)
+    m_size = tile_size_from_vl(ctx.spec.tile.m_vl)
+    n_size = tile_size_from_vl(ctx.spec.tile.n_vl)
     code_str += kernel_mm_loop_n(ctx, n_size=n_size, m_size=m_size)
     code_str += STOP_SME_FEATURE()
     code_str += RESTORE_REGS(regs)

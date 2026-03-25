@@ -2,6 +2,7 @@ from model_spec import GemmType
 
 from global_config import LD1, LD1_H, LDNT1, LDNT1_H
 from kernel_asm import (
+    _side_is_contiguous,
     kernel_1VL_1VL,
     kernel_1VL_1VL_last_k,
     kernel_1VL_2VL,
@@ -44,17 +45,6 @@ KERNEL_FUN_MAP_LAST_K = {
     ("1VL", "2VL"): kernel_1VL_2VL_last_k,
     ("1VL", "1VL"): kernel_1VL_1VL_last_k,
 }
-
-
-def _side_is_contiguous(ctx, side):
-    # Pairing remains contig-only, so variant resolution needs the same transpose-derived side capability as the emitters.
-    config = getattr(ctx.model, "config", None)
-    if config is None:
-        return False
-    attr = "a_mode" if side == "a" else "b_mode"
-    return getattr(config, attr, None) == "contiguous"
-
-
 def resolve_kernel_variant(ctx, mvl, nvl, m_fullness, n_fullness, last_k=False):
     # Collapse loop-selected fullness into one explicit kernel body variant so the tile emitter no longer re-dispatches on MIN_M/MIN_N.
     if last_k or not (ctx.is_ext_precision() and ctx.use_ext_paired_fast_path()):

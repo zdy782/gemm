@@ -1,5 +1,6 @@
 import os
 import csv
+import argparse
 
 from test_runner import run_single_test, setup_environment
 
@@ -7,6 +8,10 @@ from test_runner import run_single_test, setup_environment
 current_path = os.path.dirname(os.path.abspath(__file__))
 setup_environment()
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pack-mode", type=str, default="nopack", choices=["nopack", "packed"])
+    args = parser.parse_args()
+
     testcases_path = os.path.join(current_path, "testcases_ut.csv")
     required_columns = {
         "M", "N", "K", "lda", "ldb", "ldc",
@@ -17,7 +22,7 @@ def main():
     if not os.path.exists(testcases_path):
         print(f"[ERROR] Testcases file not found: {testcases_path}")
         print("[INFO] Running default test case...")
-        if run_single_test(16, 64, 16, 16, 64, 64, "small", "N", "N", 64):
+        if run_single_test(16, 64, 16, 16, 64, 64, "small", "N", "N", 64, pack_mode=args.pack_mode):
             print("\n[PASS] Default test case passed")
         else:
             print("\n[FAIL] Default test case failed")
@@ -69,6 +74,7 @@ def main():
                 data_type=data_type,
                 m_vl=m_vl,
                 n_vl=n_vl,
+                pack_mode=args.pack_mode,
                 verbose=True,
             )
 

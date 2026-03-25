@@ -1,4 +1,4 @@
-def generate_makefile(data_type="fp32"):
+def generate_makefile(data_type="fp32", pack_mode="nopack"):
     if data_type == "bf16":
         PRECISION_MACRO = "BF16"
         march_flags = "-march=armv9-a+sme+bf16"
@@ -16,5 +16,5 @@ def generate_makefile(data_type="fp32"):
     code_str += f"ASFLAGS = {march_flags} -O3\n"
     code_str += f"all:\n"
     code_str += f"\t$(CC) $(ASFLAGS) -c kernel_asm.S -o kernel_asm.o\n"
-    code_str += f"\t$(CXX) $(CFLAGS) test.cpp kernel_asm.o -o benchmark_kernel"
+    code_str += f"\t$(CXX) $(CFLAGS) test.cpp driver.cpp kernel_asm.o -o benchmark_kernel"
     return code_str

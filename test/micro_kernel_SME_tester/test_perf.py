@@ -1,3 +1,4 @@
+import argparse
 import subprocess
 import re
 import pandas as pd
@@ -111,6 +112,10 @@ def generate_test_cases_by_trans() -> List[Dict]:
 
 # Added data_type parameter to dynamically set precision type
 def run_test_case(case: Dict, m_vl: int, n_vl: int, data_type: str) -> float:
+    return run_test_case_with_mode(case, m_vl, n_vl, data_type, "nopack")
+
+
+def run_test_case_with_mode(case: Dict, m_vl: int, n_vl: int, data_type: str, pack_mode: str) -> float:
     m, n, k = case["m"], case["n"], case["k"]
     ta, tb = case["transa"], case["transb"]
     lda = k if ta == "T" else m
@@ -122,7 +127,8 @@ def run_test_case(case: Dict, m_vl: int, n_vl: int, data_type: str) -> float:
         f"--M {m}", f"--N {n}", f"--K {k}",
         f"--lda {lda}", f"--ldb {ldb}", f"--ldc {ldc}",
         f"--transA {ta}", f"--transB {tb}",
-        f"--data_type {data_type}", f"--m_vl {m_vl}", f"--n_vl {n_vl}"
+        f"--data_type {data_type}", f"--m_vl {m_vl}", f"--n_vl {n_vl}",
+        f"--pack-mode {pack_mode}",
     ])
 
     try:
@@ -147,11 +153,25 @@ def run_blas_case(case: Dict, blas_binary: str) -> float:
     except Exception:
         return 0.0
 
-def run_evaluation(data_type: str, blas_binary: str, func_name: str, all_cases: List[Dict]):
+
+def get_pack_modes(pack_mode: str) -> List[str]:
+    if pack_mode == "both":
+        return ["nopack", "packed"]
+    return [pack_mode]
+
+
+def get_pack_label(pack_mode: str, func_name: str) -> str:
+    if pack_mode == "nopack":
+        return "autogemm_nopacking"
+    return f"{func_name}_packed"
+
+
+def run_evaluation(data_type: str, blas_binary: str, func_name: str, all_cases: List[Dict], pack_mode: str):
     """
     Core evaluation loop. Runs all test cases for a specific data type (e.g., bf16, fp16).
     """
     total_cases = len(all_cases)
+    selected_pack_modes = get_pack_modes(pack_mode)
     print("\n" + "=" * 100)
     print(f" >>> Starting Evaluation for {data_type.upper()} ({blas_binary}) <<<")
     print("=" * 100)
@@ -168,11 +188,12 @@ def run_evaluation(data_type: str, blas_binary: str, func_name: str, all_cases: 
             "Thread": 1,
             "Function": func_name,
             "type": case["type"],
-            "Mflops_2VLx2VL": 0.0,
-            "Mflops_1VLx4VL": 0.0,
-            "Mflops_4VLx1VL": 0.0,
             "Mflops_KPL_BLAS": 0.0,
         }
+        for active_pack_mode in selected_pack_modes:
+            pack_label = get_pack_label(active_pack_mode, func_name)
+            for tile_name, _, _ in CONFIG["kernel_shapes"]:
+                row[f"Mflops_{pack_label}_{tile_name}"] = 0.0
         results.append(row)
 
     # 1. Run BLAS once as baseline
@@ -184,49 +205,45 @@ def run_evaluation(data_type: str, blas_binary: str, func_name: str, all_cases: 
         print(f"{score:,.2f}")
 
     # 2. Switch kernel shapes and fill results horizontally
-    for tile_name, m_vl, n_vl in CONFIG["kernel_shapes"]:
+    for active_pack_mode in selected_pack_modes:
+        pack_label = get_pack_label(active_pack_mode, func_name)
         print("\n" + "=" * 100)
-        print(f">>> Starting tile test: {tile_name} (m_vl={m_vl}, n_vl={n_vl}) <<<")
+        print(f">>> Starting kernel mode: {pack_label} <<<")
+        for tile_name, m_vl, n_vl in CONFIG["kernel_shapes"]:
+            print("\n" + "=" * 100)
+            print(f">>> Starting tile test: {tile_name} (m_vl={m_vl}, n_vl={n_vl}, pack_mode={active_pack_mode}) <<<")
 
-        for i, case in enumerate(all_cases):
-            print(f"[{i+1}/{total_cases}] {tile_name:8}: {results[i]['Command']:60} ... ", end="", flush=True)
-            score = run_test_case(case, m_vl, n_vl, data_type)
-            results[i][f"Mflops_{tile_name}"] = score
-            print(f"{score:,.2f}")
+            for i, case in enumerate(all_cases):
+                print(f"[{i+1}/{total_cases}] {tile_name:8}/{active_pack_mode:7}: {results[i]['Command']:60} ... ", end="", flush=True)
+                score = run_test_case_with_mode(case, m_vl, n_vl, data_type, active_pack_mode)
+                results[i][f"Mflops_{pack_label}_{tile_name}"] = score
+                print(f"{score:,.2f}")
 
     # Data processing and export
     if results:
         df = pd.DataFrame(results)
 
-        # Calculate improvement percentages
-        for tile_name, _, _ in CONFIG["kernel_shapes"]:
-            col_name = f"Improve_blas/{tile_name}"
-            mask = df["Mflops_KPL_BLAS"] > 0
-            df.loc[mask, col_name] = (
-                (df.loc[mask, f"Mflops_{tile_name}"] / df.loc[mask, "Mflops_KPL_BLAS"]) - 1.0
-            ) * 100.0
-            df.loc[~mask, col_name] = 0.0
-            df[col_name] = df[col_name].map(lambda x: f"{x:+.2f}%" if x != 0.0 else "N/A")
+        ordered_cols = ["Command", "Thread", "Function", "type"]
 
-        header_tuples = [
-            ("Command", "", ""),
-            ("Thread", "", ""),
-            ("Function", "", ""),
-            ("type", "", ""),
-            ("Mflops", "autogemm nopacking", "2VLx2VL"),
-            ("Mflops", "autogemm nopacking", "1VLx4VL"),
-            ("Mflops", "autogemm nopacking", "4VLx1VL"),
-            ("Mflops", "KPL_BLAS", ""),
-            ("Improve", "blas/2VLx2VL", ""),
-            ("Improve", "blas/1VLx4VL", ""),
-            ("Improve", "blas/4VLx1VL", "")
-        ]
+        for active_pack_mode in selected_pack_modes:
+            pack_label = get_pack_label(active_pack_mode, func_name)
+            for tile_name, _, _ in CONFIG["kernel_shapes"]:
+                metric_col = f"Mflops_{pack_label}_{tile_name}"
+                improve_col = f"Improve_blas/{pack_label}_{tile_name}"
+                mask = df["Mflops_KPL_BLAS"] > 0
+                df.loc[mask, improve_col] = (
+                    (df.loc[mask, metric_col] / df.loc[mask, "Mflops_KPL_BLAS"]) - 1.0
+                ) * 100.0
+                df.loc[~mask, improve_col] = 0.0
+                df[improve_col] = df[improve_col].map(lambda x: f"{x:+.2f}%" if x != 0.0 else "N/A")
+                ordered_cols.append(metric_col)
 
-        ordered_cols = [
-            "Command", "Thread", "Function", "type",
-            "Mflops_2VLx2VL", "Mflops_1VLx4VL", "Mflops_4VLx1VL", "Mflops_KPL_BLAS",
-            "Improve_blas/2VLx2VL", "Improve_blas/1VLx4VL", "Improve_blas/4VLx1VL"
-        ]
+        ordered_cols.append("Mflops_KPL_BLAS")
+
+        for active_pack_mode in selected_pack_modes:
+            pack_label = get_pack_label(active_pack_mode, func_name)
+            for tile_name, _, _ in CONFIG["kernel_shapes"]:
+                ordered_cols.append(f"Improve_blas/{pack_label}_{tile_name}")
 
         export_df = df[ordered_cols].copy()
         timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
@@ -235,28 +252,22 @@ def run_evaluation(data_type: str, blas_binary: str, func_name: str, all_cases: 
         excel_file = f"sme_kernel_{data_type}_wide_format_{timestamp}.xlsx"
         csv_file = f"sme_kernel_{data_type}_wide_format_{timestamp}.csv"
 
-        # Export 1: Excel with multi-level header
+        # Export 1: Excel
         try:
-            multi_df = export_df.copy()
-            multi_df.columns = pd.MultiIndex.from_tuples(header_tuples)
-            multi_df.to_excel(excel_file, index=False)
-            print(f"\n[File] Formatted Excel with multi-level header saved to: {excel_file}")
+            export_df.to_excel(excel_file, index=False)
+            print(f"\n[File] Excel saved to: {excel_file}")
         except Exception as e:
             print(f"\n[Notice] Failed to save Excel, openpyxl may be missing. Skipping Excel export. Error: {e}")
 
         # Export 2: Flat CSV fallback
-        export_df.columns = [
-            "Command", "Thread", "Function", "type",
-            "Mflops_autogemm_nopacking_2VLx2VL",
-            "Mflops_autogemm_nopacking_1VLx4VL",
-            "Mflops_autogemm_nopacking_4VLx1VL",
-            "Mflops_KPL_BLAS",
-            "Improve_blas/2VLx2VL", "Improve_blas/1VLx4VL", "Improve_blas/4VLx1VL"
-        ]
         export_df.to_csv(csv_file, index=False)
         print(f"[File] Flat CSV saved to: {csv_file}")
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pack-mode", type=str, default="nopack", choices=["nopack", "packed", "both"])
+    args = parser.parse_args()
+
     print("=" * 100)
     print("  SME Kernel vs BLAS (Automated BF16 & FP16 Testing)")
     print("=" * 100)
@@ -277,7 +288,8 @@ def main():
                 data_type=config["data_type"],
                 blas_binary=config["blas_binary"],
                 func_name=config["func_name"],
-                all_cases=all_cases
+                all_cases=all_cases,
+                pack_mode=args.pack_mode,
             )
 
     except KeyboardInterrupt:

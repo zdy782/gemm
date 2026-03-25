@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -22,6 +22,11 @@ class Transpose(str, Enum):
     TRANSPOSED = "T"
 
 
+class PackMode(str, Enum):
+    NOPACK = "nopack"
+    PACKED = "packed"
+
+
 @dataclass(frozen=True)
 class TileShape:
     m_vl: int
@@ -41,6 +46,7 @@ class KernelSpec:
     trans_b: Transpose
     precision: Precision
     tile: TileShape
+    pack_mode: PackMode = PackMode.NOPACK
 
     @classmethod
     def from_args(
@@ -57,6 +63,7 @@ class KernelSpec:
         data_type: str,
         m_vl: int,
         n_vl: int,
+        pack_mode: str = "nopack",
     ) -> "KernelSpec":
         return cls(
             M=M,
@@ -70,6 +77,7 @@ class KernelSpec:
             trans_b=Transpose(transB),
             precision=Precision(data_type),
             tile=TileShape(m_vl=m_vl, n_vl=n_vl),
+            pack_mode=PackMode(pack_mode),
         )
 
     @property
@@ -95,6 +103,37 @@ class KernelSpec:
 
     def is_ext_precision(self) -> bool:
         return self.precision in (Precision.BF16, Precision.FP16)
+
+    def is_packed(self) -> bool:
+        return self.pack_mode is PackMode.PACKED
+
+    def gemm_prefix(self) -> str:
+        if self.is_bf16():
+            return "sbgemm"
+        if self.is_fp16():
+            return "shgemm"
+        return "sgemm"
+
+    def packed_lda(self) -> int:
+        return self.M if self.trans_a is Transpose.NORMAL else self.K
+
+    def packed_ldb(self) -> int:
+        return self.K if self.trans_b is Transpose.NORMAL else self.N
+
+    def packed_a_cols(self) -> int:
+        return self.K if self.trans_a is Transpose.NORMAL else self.M
+
+    def packed_b_cols(self) -> int:
+        return self.N if self.trans_b is Transpose.NORMAL else self.K
+
+    def as_kernel_spec(self) -> "KernelSpec":
+        if not self.is_packed():
+            return self
+        return replace(
+            self,
+            lda=self.packed_lda(),
+            ldb=self.packed_ldb(),
+        )
 
 
 @dataclass(frozen=True)
