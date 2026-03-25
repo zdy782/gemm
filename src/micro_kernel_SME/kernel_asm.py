@@ -58,6 +58,8 @@ def _gen_load(ctx, op, regs_a, regs_b, load_inst, lda_inst, last_k):
             b_next,
             op.get("next_a_role"),
             op.get("next_b_role"),
+            op.get("next_a_load_role"),
+            op.get("next_b_load_role"),
         )
 
     reg_idx = op["idx"]
@@ -67,7 +69,16 @@ def _gen_load(ctx, op, regs_a, regs_b, load_inst, lda_inst, last_k):
     next_reg = regs[op["next_idx"]] if op.get("next_idx") is not None else None
     if next_reg is None:
         return load_fn(ctx, regs[reg_idx], op["role"], load_inst, lda_inst)
-    return load_fn(ctx, regs[reg_idx], op["role"], load_inst, lda_inst, next_reg, op.get("next_role"))
+    return load_fn(
+        ctx,
+        regs[reg_idx],
+        op["role"],
+        load_inst,
+        lda_inst,
+        next_reg,
+        op.get("next_role"),
+        op.get("next_load_role"),
+    )
 
 
 def _gen_mopa(ctx, op, regs_a, regs_b):
@@ -261,17 +272,19 @@ def _load_lane_role(op, side):
     return None
 
 
-def _set_paired_load(op, side, next_idx, next_role):
+def _set_paired_load(op, side, next_idx, next_role, next_load_role=None):
     # Record the second lane that should be materialized together with this load when a pair collapse succeeds.
     if op["kind"] == "load_ab":
         op[f"next_{side}"] = next_idx
         op[f"next_{side}_role"] = next_role
+        op[f"next_{side}_load_role"] = next_load_role
         return
     op["next_idx"] = next_idx
     op["next_role"] = next_role
+    op["next_load_role"] = next_load_role
 
 
-def _collapse_side_pairs(plan, side, lane_pairs):
+def _collapse_side_pairs(plan, side, lane_pairs, pair_load_role=None):
     # Merge adjacent same-side load records into one paired load record without crossing a pointer update boundary.
     ptr_name = "A" if side == "a" else "B"
     i = 0
@@ -303,18 +316,53 @@ def _collapse_side_pairs(plan, side, lane_pairs):
 
         if found is not None:
             next_op = plan.pop(found)
-            _set_paired_load(op, side, next_lane, _load_lane_role(next_op, side))
+            _set_paired_load(
+                op,
+                side,
+                next_lane,
+                _load_lane_role(next_op, side),
+                next_load_role=pair_load_role or _load_lane_role(next_op, side),
+            )
         i += 1
     return plan
 
 
-def _build_small_plan_variant(key, last_k, a_pairs=(), b_pairs=()):
+def _promote_lane_role(plan, side, lane_idx, promoted_role):
+    # When a runtime-selected chunk is fully covered, its "tail" lane should behave like another full main lane.
+    role_field = "m_role" if side == "a" else "n_role"
+    load_role_field = "a_role" if side == "a" else "b_role"
+    load_idx_field = "a" if side == "a" else "b"
+    single_kind = side
+    for op in plan:
+        if op["kind"] == "load_ab" and op[load_idx_field] == lane_idx:
+            op[load_role_field] = promoted_role
+        elif op["kind"] == single_kind and op["idx"] == lane_idx:
+            op["role"] = promoted_role
+        elif op["kind"] == "mopa" and op[load_idx_field] == lane_idx:
+            op[role_field] = promoted_role
+    return plan
+
+
+def _build_small_plan_variant(
+    key,
+    last_k,
+    a_pairs=(),
+    b_pairs=(),
+    a_pair_load_role=None,
+    b_pair_load_role=None,
+    promote_a_lanes=(),
+    promote_b_lanes=(),
+):
     # Build one small-kernel plan by collapsing the physical `2VL` chunks that the current tile shape is allowed to pair.
     base_plan = deepcopy(KERNEL_LAST_K_PLANS[key] if last_k else KERNEL_PLANS[key])
+    for lane in promote_a_lanes:
+        base_plan = _promote_lane_role(base_plan, "a", lane, "m_main")
+    for lane in promote_b_lanes:
+        base_plan = _promote_lane_role(base_plan, "b", lane, "n_main")
     if a_pairs:
-        base_plan = _collapse_side_pairs(base_plan, "a", set(a_pairs))
+        base_plan = _collapse_side_pairs(base_plan, "a", set(a_pairs), pair_load_role=a_pair_load_role)
     if b_pairs:
-        base_plan = _collapse_side_pairs(base_plan, "b", set(b_pairs))
+        base_plan = _collapse_side_pairs(base_plan, "b", set(b_pairs), pair_load_role=b_pair_load_role)
     return base_plan
 
 
@@ -332,12 +380,12 @@ def _gen_plan_code(ctx, key, last_k, plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt
     return _gen_kernel(ctx, plan, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def _gen_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    # Choose the active plan for this tile by pairing every contiguous chunk that belongs to the loop-selected shape.
+def _gen_active_kernel(ctx, key, last_k, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
+    # Emit one explicit tile variant so fullness selection stays in L1/L2 instead of re-branching inside the kernel body.
     safe_plan = _build_small_plan_variant(key, last_k)
     safe_code = _gen_plan_code(ctx, key, last_k, safe_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
-    if last_k or not (ctx.is_ext_precision() and ctx.use_ext_paired_fast_path()):
+    if variant == "safe" or last_k or not (ctx.is_ext_precision() and ctx.use_ext_paired_fast_path()):
         return safe_code
 
     m_vl, n_vl = _KEY_TILE_VL[key]
@@ -348,129 +396,151 @@ def _gen_active_kernel(ctx, key, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=N
         return safe_code
 
     if key == "1VL_2VL":
-        if not b_contig:
+        if variant != "full" or not b_contig:
             return safe_code
-        # Once L1 selected `1x2`, the whole contiguous `2VL` chunk may pair even if the second logical lane is partial.
         b_pairs = _full_chunk_pairs(n_vl)
-        full_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs)
+        full_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs, b_pair_load_role="n_main")
         return _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
     if key == "2VL_1VL":
-        if not a_contig:
+        if variant != "full" or not a_contig:
             return safe_code
         a_pairs = _full_chunk_pairs(m_vl)
-        full_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs)
+        full_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs, a_pair_load_role="m_main")
         return _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
     if key == "1VL_3VL":
-        if not b_contig:
+        if variant != "hybrid" or not b_contig:
             return safe_code
         b_pairs = _leading_chunk_pairs(n_vl)
-        hybrid_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs)
+        hybrid_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs, b_pair_load_role="n_main")
         return _gen_plan_code(ctx, key, last_k, hybrid_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
     if key == "3VL_1VL":
-        if not a_contig:
+        if variant != "hybrid" or not a_contig:
             return safe_code
         a_pairs = _leading_chunk_pairs(m_vl)
-        hybrid_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs)
+        hybrid_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs, a_pair_load_role="m_main")
         return _gen_plan_code(ctx, key, last_k, hybrid_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
     if key == "1VL_4VL":
         if not b_contig:
             return safe_code
-        # Once L1 selected `1x4`, both N-side `2VL` chunks may pair and the pg state will naturally shrink lane 3 when needed.
-        full_pairs = _full_chunk_pairs(n_vl)
-        full_plan = _build_small_plan_variant(key, last_k, b_pairs=full_pairs)
-        return _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        if variant == "lead":
+            lead_plan = _build_small_plan_variant(key, last_k, b_pairs=((0, 1),), b_pair_load_role="n_main")
+            return _gen_plan_code(ctx, key, last_k, lead_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        if variant == "full":
+            full_plan = _build_small_plan_variant(
+                key,
+                last_k,
+                b_pairs=((0, 1), (2, 3)),
+                b_pair_load_role="n_main",
+                promote_b_lanes=(3,),
+            )
+            return _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        return safe_code
 
     if key == "4VL_1VL":
         if not a_contig:
             return safe_code
-        # Once L2 selected `4x1`, both M-side `2VL` chunks may pair and the pg state will naturally shrink lane 3 when needed.
-        full_pairs = _full_chunk_pairs(m_vl)
-        full_plan = _build_small_plan_variant(key, last_k, a_pairs=full_pairs)
-        return _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        if variant == "lead":
+            lead_plan = _build_small_plan_variant(key, last_k, a_pairs=((0, 1),), a_pair_load_role="m_main")
+            return _gen_plan_code(ctx, key, last_k, lead_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        if variant == "full":
+            full_plan = _build_small_plan_variant(
+                key,
+                last_k,
+                a_pairs=((0, 1), (2, 3)),
+                a_pair_load_role="m_main",
+                promote_a_lanes=(3,),
+            )
+            return _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        return safe_code
 
     if key == "2VL_2VL":
-        if a_contig and b_contig:
-            # Once both loops selected `2x2`, both contiguous axes pair their single `2VL` chunk even when lane 1 is partial.
-            both_plan = _build_small_plan_variant(key, last_k, a_pairs=_full_chunk_pairs(m_vl), b_pairs=_full_chunk_pairs(n_vl))
-            return _gen_plan_code(ctx, key, last_k, both_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-        if a_contig:
-            a_pairs = _full_chunk_pairs(m_vl)
-            full_plan = _build_small_plan_variant(key, last_k, a_pairs=a_pairs)
+        if variant == "full":
+            a_pairs = ((0, 1),) if a_contig else ()
+            b_pairs = ((0, 1),) if b_contig else ()
+            if not a_pairs and not b_pairs:
+                return safe_code
+            full_plan = _build_small_plan_variant(
+                key,
+                last_k,
+                a_pairs=a_pairs,
+                b_pairs=b_pairs,
+                a_pair_load_role="m_main" if a_pairs else None,
+                b_pair_load_role="n_main" if b_pairs else None,
+                promote_a_lanes=(1,) if a_pairs else (),
+                promote_b_lanes=(1,) if b_pairs else (),
+            )
             return _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
-        if b_contig:
-            b_pairs = _full_chunk_pairs(n_vl)
-            full_plan = _build_small_plan_variant(key, last_k, b_pairs=b_pairs)
-            return _gen_plan_code(ctx, key, last_k, full_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+        return safe_code
 
     return safe_code
 
 
-def kernel_4VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "4VL_1VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_4VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="safe"):
+    return _gen_active_kernel(ctx, "4VL_1VL", False, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_1VL_4VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "1VL_4VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_1VL_4VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="safe"):
+    return _gen_active_kernel(ctx, "1VL_4VL", False, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_3VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "3VL_1VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_3VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="hybrid"):
+    return _gen_active_kernel(ctx, "3VL_1VL", False, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_1VL_3VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "1VL_3VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_1VL_3VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="hybrid"):
+    return _gen_active_kernel(ctx, "1VL_3VL", False, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_2VL_2VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "2VL_2VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_2VL_2VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="safe"):
+    return _gen_active_kernel(ctx, "2VL_2VL", False, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_1VL_2VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "1VL_2VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_1VL_2VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="safe"):
+    return _gen_active_kernel(ctx, "1VL_2VL", False, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_2VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "2VL_1VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_2VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="safe"):
+    return _gen_active_kernel(ctx, "2VL_1VL", False, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_1VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "1VL_1VL", False, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_1VL_1VL(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="safe"):
+    return _gen_active_kernel(ctx, "1VL_1VL", False, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_4VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "4VL_1VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_4VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="safe"):
+    return _gen_active_kernel(ctx, "4VL_1VL", True, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_1VL_4VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "1VL_4VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_1VL_4VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="safe"):
+    return _gen_active_kernel(ctx, "1VL_4VL", True, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_3VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "3VL_1VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_3VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="safe"):
+    return _gen_active_kernel(ctx, "3VL_1VL", True, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_1VL_3VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "1VL_3VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_1VL_3VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="safe"):
+    return _gen_active_kernel(ctx, "1VL_3VL", True, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_2VL_2VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "2VL_2VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_2VL_2VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="safe"):
+    return _gen_active_kernel(ctx, "2VL_2VL", True, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_1VL_2VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "1VL_2VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_1VL_2VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="safe"):
+    return _gen_active_kernel(ctx, "1VL_2VL", True, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_2VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "2VL_1VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_2VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="safe"):
+    return _gen_active_kernel(ctx, "2VL_1VL", True, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def kernel_1VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    return _gen_active_kernel(ctx, "1VL_1VL", True, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
+def kernel_1VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None, variant="safe"):
+    return _gen_active_kernel(ctx, "1VL_1VL", True, variant, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
 def save_zacol(pc, off, za, base_idx, idx, pg, rab0, rc0):

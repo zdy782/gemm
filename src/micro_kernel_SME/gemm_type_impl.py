@@ -32,16 +32,15 @@ def _zip_ext_predicate(ctx, role):
     return f"zip1      {ext_pred}.h, {pred}.h, {pred}.h\n"
 
 
-def _paired_ext_predicate(ctx, first_role, second_role=None):
-    # Prepare the paired load predicate, including the mixed main/tail form used when one logical lane is only partially full.
+def _paired_ext_predicate(ctx, first_role, second_role=None, load_second_role=None):
+    # Build the load predicate from one role pair, then rebuild the logical ext predicates that later mopa ops expect.
     second_role = first_role if second_role is None else second_role
-    if second_role == first_role:
-        return _zip_ext_predicate(ctx, first_role), _ext_pred(ctx, first_role), ""
-
-    target = _ext_pred(ctx, second_role)
-    pre_load = f"zip1      {target}.h, {_pred(ctx, first_role)}.h, {_pred(ctx, second_role)}.h\n"
+    load_second_role = second_role if load_second_role is None else load_second_role
+    target = _ext_pred(ctx, load_second_role)
+    pre_load = f"zip1      {target}.h, {_pred(ctx, first_role)}.h, {_pred(ctx, load_second_role)}.h\n"
     post_load = _zip_ext_predicate(ctx, first_role)
-    post_load += _zip_ext_predicate(ctx, second_role)
+    if second_role is not None:
+        post_load += _zip_ext_predicate(ctx, second_role)
     return pre_load, target, post_load
 
 
@@ -95,10 +94,12 @@ def _gen_ext_contiguous_head(ctx, base, stride, tmp_base, role, dst, low_tmp, hi
     return code_str
 
 
-def _gen_ext_contiguous_head_pair_fast(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
+def _gen_ext_contiguous_head_pair_fast(
+    ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp, load_role1=None
+):
     # Materialize the first contiguous `2VL` chunk as two operands with one load pair plus `zip1+zip2`.
     code_str = f""
-    pred_pre, pred, pred_post = _paired_ext_predicate(ctx, role0, role1)
+    pred_pre, pred, pred_post = _paired_ext_predicate(ctx, role0, role1, load_second_role=load_role1)
     code_str += pred_pre
     code_str += f"ld1h      {low_tmp}.h, {pred}/z, [{base}]\n"
     code_str += f"add       {tmp_base}, {base}, {stride}, LSL #1\n"
@@ -108,17 +109,26 @@ def _gen_ext_contiguous_head_pair_fast(ctx, base, stride, tmp_base, role0, role1
     return code_str
 
 
-def _gen_ext_contiguous_head_pair(ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp):
+def _gen_ext_contiguous_head_pair(
+    ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp, load_role1=None
+):
     # The head pair dispatcher always pairs one contiguous `2VL` chunk and lets the pg state describe whether lane 1 is partial.
     return _gen_ext_contiguous_head_pair_fast(
-        ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp
+        ctx, base, stride, tmp_base, role0, role1, dst0, dst1, low_tmp, high_tmp, load_role1=load_role1
     )
 
 
-def _gen_ext_contiguous_lane_fast_pair(ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None):
+def _gen_ext_contiguous_lane_fast_pair(
+    ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None, next_load_role=None
+):
     # Load one later contiguous `2VL` chunk and shape it with `zip1+zip2`, even when the second logical lane is only partially full.
     code_str = f""
-    pred_pre, pred, pred_post = _paired_ext_predicate(ctx, role, next_role if next_dst is not None else None)
+    pred_pre, pred, pred_post = _paired_ext_predicate(
+        ctx,
+        role,
+        next_role if next_dst is not None else None,
+        load_second_role=next_load_role if next_dst is not None else None,
+    )
     code_str += pred_pre
     code_str += _rdvl_lane_offset(ctx.registers, lane)
     code_str += f"ld1h      {low_tmp}.h, {pred}/z, [{base}, {ctx.registers.address.TMP_PTR2}, LSL #1]\n"
@@ -128,7 +138,9 @@ def _gen_ext_contiguous_lane_fast_pair(ctx, base, paired_base, role, dst, lane, 
     return code_str
 
 
-def _gen_ext_contiguous_lane(ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None):
+def _gen_ext_contiguous_lane(
+    ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None, next_load_role=None
+):
     # This is the main lane materializer for ext contiguous paths after the first head load.
     if next_dst is None:
         pred = _pred(ctx, role)
@@ -140,7 +152,17 @@ def _gen_ext_contiguous_lane(ctx, base, paired_base, role, dst, lane, low_tmp, h
         code_str += f"zip1      {dst}.h, {low_tmp}.h, {high_tmp}.h\n"
         return code_str
     return _gen_ext_contiguous_lane_fast_pair(
-        ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=next_dst, next_role=next_role
+        ctx,
+        base,
+        paired_base,
+        role,
+        dst,
+        lane,
+        low_tmp,
+        high_tmp,
+        next_dst=next_dst,
+        next_role=next_role,
+        next_load_role=next_load_role,
     )
 
 
@@ -268,7 +290,7 @@ def _gen_non_ext_gather(load_inst, ctx, base, role, index_vec, dst):
     return f"{load_inst}      {dst}{suffix}, {pred}, [{base}, {index_vec}.s, UXTW]\n"
 
 
-def _gen_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None):
+def _gen_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None, next_load_role=None):
     # Choose the A-side head loader from contiguous/gather and ext/non-ext mode for the active transpose model.
     regs = ctx.registers
     if config.a_mode == LOAD_CONTIGUOUS:
@@ -285,6 +307,7 @@ def _gen_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None):
                     next_dst,
                     regs.vectors.a_low,
                     regs.vectors.pair_high,
+                    load_role1=next_load_role,
                 )
             return _gen_ext_contiguous_head(
                 ctx,
@@ -312,7 +335,7 @@ def _gen_a_head(ctx, config, a0, role, ldaopt, next_dst=None, next_role=None):
     return _gen_non_ext_gather(ldaopt, ctx, regs.pointers.pA0, role, regs.vectors.a_index, a0)
 
 
-def _gen_b_head(ctx, config, b0, role, ldopt, next_dst=None, next_role=None):
+def _gen_b_head(ctx, config, b0, role, ldopt, next_dst=None, next_role=None, next_load_role=None):
     # Choose the B-side head loader with the same policy, but using B-specific temporaries and strides.
     regs = ctx.registers
     if config.b_mode == LOAD_CONTIGUOUS:
@@ -329,6 +352,7 @@ def _gen_b_head(ctx, config, b0, role, ldopt, next_dst=None, next_role=None):
                     next_dst,
                     config.b_low_tmp,
                     config.b_high_tmp,
+                    load_role1=next_load_role,
                 )
             return _gen_ext_contiguous_head(
                 ctx,
@@ -428,7 +452,7 @@ def _gen_gather_base(target, registers, lane, is_a):
     return _gen_gather_base_setup(target, registers, lane, is_a)
 
 
-def _gen_a_lane(ctx, config, dst, role, lane, ldaopt, next_dst=None, next_role=None):
+def _gen_a_lane(ctx, config, dst, role, lane, ldaopt, next_dst=None, next_role=None, next_load_role=None):
     # Load later A lanes after the head, preserving the same contiguous/gather and fast/safe policy.
     regs = ctx.registers
     if config.a_mode == LOAD_CONTIGUOUS:
@@ -444,6 +468,7 @@ def _gen_a_lane(ctx, config, dst, role, lane, ldaopt, next_dst=None, next_role=N
                 regs.vectors.pair_high,
                 next_dst=next_dst if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
                 next_role=next_role,
+                next_load_role=next_load_role,
             )
         return _gen_non_ext_contiguous(ldaopt, ctx, regs.pointers.pA0, role, dst, lane)
 
@@ -464,7 +489,7 @@ def _gen_a_lane(ctx, config, dst, role, lane, ldaopt, next_dst=None, next_role=N
     return code_str
 
 
-def _gen_b_lane(ctx, config, dst, role, lane, ldopt, next_dst=None, next_role=None):
+def _gen_b_lane(ctx, config, dst, role, lane, ldopt, next_dst=None, next_role=None, next_load_role=None):
     # Load later B lanes after the head, again reusing the same policy decisions as the A path.
     regs = ctx.registers
     if config.b_mode == LOAD_CONTIGUOUS:
@@ -480,6 +505,7 @@ def _gen_b_lane(ctx, config, dst, role, lane, ldopt, next_dst=None, next_role=No
                 config.b_high_tmp,
                 next_dst=next_dst if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
                 next_role=next_role,
+                next_load_role=next_load_role,
             )
         return _gen_non_ext_contiguous(ldopt, ctx, regs.pointers.pB0, role, dst, lane)
 
@@ -584,26 +610,64 @@ class SmallGemmModel:
 
     # `SmallGemmModel` gives the plan layer one uniform API while hiding transpose-specific load mechanics.
 
-    def load_a0b0(self, ctx, a0, a_role, b0, b_role, ldopt, ldaopt, a1=None, b1=None, a1_role=None, b1_role=None):
-        code_str = _gen_a_head(ctx, self.config, a0, a_role, ldaopt, next_dst=a1, next_role=a1_role)
-        code_str += _gen_b_head(ctx, self.config, b0, b_role, ldopt, next_dst=b1, next_role=b1_role)
+    def load_a0b0(
+        self,
+        ctx,
+        a0,
+        a_role,
+        b0,
+        b_role,
+        ldopt,
+        ldaopt,
+        a1=None,
+        b1=None,
+        a1_role=None,
+        b1_role=None,
+        a1_load_role=None,
+        b1_load_role=None,
+    ):
+        code_str = _gen_a_head(
+            ctx, self.config, a0, a_role, ldaopt, next_dst=a1, next_role=a1_role, next_load_role=a1_load_role
+        )
+        code_str += _gen_b_head(
+            ctx, self.config, b0, b_role, ldopt, next_dst=b1, next_role=b1_role, next_load_role=b1_load_role
+        )
         return code_str
 
-    def load_a0b0_last_k(self, ctx, a0, a_role, b0, b_role, ldopt, ldaopt, a1=None, b1=None, a1_role=None, b1_role=None):
+    def load_a0b0_last_k(
+        self,
+        ctx,
+        a0,
+        a_role,
+        b0,
+        b_role,
+        ldopt,
+        ldaopt,
+        a1=None,
+        b1=None,
+        a1_role=None,
+        b1_role=None,
+        a1_load_role=None,
+        b1_load_role=None,
+    ):
         code_str = _gen_a_last_k(ctx, self.config, a0, a_role, 0, next_reg=a1, next_role=a1_role)
         code_str += _gen_b_last_k(ctx, self.config, b0, b_role, 0, next_reg=b1, next_role=b1_role)
         return code_str
 
-    def load_a1(self, ctx, a1, role, ldopt, ldaopt, a2=None, a2_role=None):
-        return _gen_a_lane(ctx, self.config, a1, role, 1, ldaopt, next_dst=a2, next_role=a2_role)
+    def load_a1(self, ctx, a1, role, ldopt, ldaopt, a2=None, a2_role=None, a2_load_role=None):
+        return _gen_a_lane(
+            ctx, self.config, a1, role, 1, ldaopt, next_dst=a2, next_role=a2_role, next_load_role=a2_load_role
+        )
 
-    def load_a1_last_k(self, ctx, a1, role, ldopt, ldaopt, a2=None, a2_role=None):
+    def load_a1_last_k(self, ctx, a1, role, ldopt, ldaopt, a2=None, a2_role=None, a2_load_role=None):
         return _gen_a_last_k(ctx, self.config, a1, role, 1, next_reg=a2, next_role=a2_role)
 
-    def load_a2(self, ctx, a2, role, ldopt, ldaopt, a3=None, a3_role=None):
-        return _gen_a_lane(ctx, self.config, a2, role, 2, ldaopt, next_dst=a3, next_role=a3_role)
+    def load_a2(self, ctx, a2, role, ldopt, ldaopt, a3=None, a3_role=None, a3_load_role=None):
+        return _gen_a_lane(
+            ctx, self.config, a2, role, 2, ldaopt, next_dst=a3, next_role=a3_role, next_load_role=a3_load_role
+        )
 
-    def load_a2_last_k(self, ctx, a2, role, ldopt, ldaopt, a3=None, a3_role=None):
+    def load_a2_last_k(self, ctx, a2, role, ldopt, ldaopt, a3=None, a3_role=None, a3_load_role=None):
         return _gen_a_last_k(ctx, self.config, a2, role, 2, next_reg=a3, next_role=a3_role)
 
     def load_a3(self, ctx, a3, role, ldopt, ldaopt, a4=None):
@@ -612,16 +676,20 @@ class SmallGemmModel:
     def load_a3_last_k(self, ctx, a3, role, ldopt, ldaopt, a4=None):
         return _gen_a_last_k(ctx, self.config, a3, role, 3)
 
-    def load_b1(self, ctx, b1, role, ldopt, ldaopt, b2=None, b2_role=None):
-        return _gen_b_lane(ctx, self.config, b1, role, 1, ldopt, next_dst=b2, next_role=b2_role)
+    def load_b1(self, ctx, b1, role, ldopt, ldaopt, b2=None, b2_role=None, b2_load_role=None):
+        return _gen_b_lane(
+            ctx, self.config, b1, role, 1, ldopt, next_dst=b2, next_role=b2_role, next_load_role=b2_load_role
+        )
 
-    def load_b1_last_k(self, ctx, b1, role, ldopt, ldaopt, b2=None, b2_role=None):
+    def load_b1_last_k(self, ctx, b1, role, ldopt, ldaopt, b2=None, b2_role=None, b2_load_role=None):
         return _gen_b_last_k(ctx, self.config, b1, role, 1, next_reg=b2, next_role=b2_role)
 
-    def load_b2(self, ctx, b2, role, ldopt, ldaopt, b3=None, b3_role=None):
-        return _gen_b_lane(ctx, self.config, b2, role, 2, ldopt, next_dst=b3, next_role=b3_role)
+    def load_b2(self, ctx, b2, role, ldopt, ldaopt, b3=None, b3_role=None, b3_load_role=None):
+        return _gen_b_lane(
+            ctx, self.config, b2, role, 2, ldopt, next_dst=b3, next_role=b3_role, next_load_role=b3_load_role
+        )
 
-    def load_b2_last_k(self, ctx, b2, role, ldopt, ldaopt, b3=None, b3_role=None):
+    def load_b2_last_k(self, ctx, b2, role, ldopt, ldaopt, b3=None, b3_role=None, b3_load_role=None):
         return _gen_b_last_k(ctx, self.config, b2, role, 2, next_reg=b3, next_role=b3_role)
 
     def load_b3(self, ctx, b3, role, ldopt, ldaopt, b4=None):
@@ -648,7 +716,22 @@ class SmallGemmModel:
 
 class GeneralGemmModel:
     # `GeneralGemmModel` keeps the older straightforward schedule used outside the specialized small path.
-    def load_a0b0(self, ctx, a0, a_role, b0, b_role, ldopt, ldaopt, a1=None, b1=None, a1_role=None, b1_role=None):
+    def load_a0b0(
+        self,
+        ctx,
+        a0,
+        a_role,
+        b0,
+        b_role,
+        ldopt,
+        ldaopt,
+        a1=None,
+        b1=None,
+        a1_role=None,
+        b1_role=None,
+        a1_load_role=None,
+        b1_load_role=None,
+    ):
         regs = ctx.registers
         if ctx.is_ext_precision():
             code_str = f""
@@ -656,11 +739,13 @@ class GeneralGemmModel:
                 ctx,
                 a_role,
                 a1_role if ctx.use_ext_paired_fast_path() and a1 is not None else None,
+                load_second_role=a1_load_role if ctx.use_ext_paired_fast_path() and a1 is not None else None,
             )
             b_pred_pre, b_pred, b_pred_post = _paired_ext_predicate(
                 ctx,
                 b_role,
                 b1_role if ctx.use_ext_paired_fast_path() and b1 is not None else None,
+                load_second_role=b1_load_role if ctx.use_ext_paired_fast_path() and b1 is not None else None,
             )
             code_str += a_pred_pre
             code_str += f"ld1h      {regs.vectors.a_low}.h, {a_pred}/z, [{regs.pointers.pA0}]\n"
@@ -688,7 +773,7 @@ class GeneralGemmModel:
     def _b_high(self, ctx):
         return ctx.registers.vectors.b_high
 
-    def _gen_general_a(self, ctx, dst, role, lane, ldaopt, next_dst=None, next_role=None):
+    def _gen_general_a(self, ctx, dst, role, lane, ldaopt, next_dst=None, next_role=None, next_load_role=None):
         # General A loads use fixed MUL VL offsets instead of the chunk-aware small-kernel loaders.
         regs = ctx.registers
         if ctx.is_ext_precision():
@@ -699,6 +784,7 @@ class GeneralGemmModel:
                 ctx,
                 role,
                 next_role if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
+                load_second_role=next_load_role if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
             )
             code_str += pred_pre
             code_str += f"ld1h     {regs.vectors.a_low}.h, {pred}/z, [{regs.pointers.pA0}, #{low_offset}, MUL VL]\n"
@@ -710,7 +796,7 @@ class GeneralGemmModel:
             return code_str
         return f"{ldaopt}     {dst}{get_ld_element_suffix(ctx)}, {_load_predicate(ctx, role)}, [{regs.pointers.pA0}, #{lane}, MUL VL]\n"
 
-    def _gen_general_b(self, ctx, dst, role, lane, ldopt, next_dst=None, next_role=None):
+    def _gen_general_b(self, ctx, dst, role, lane, ldopt, next_dst=None, next_role=None, next_load_role=None):
         # General B loads mirror general A and keep the old simple paired-via-offset schedule.
         regs = ctx.registers
         if ctx.is_ext_precision():
@@ -721,6 +807,7 @@ class GeneralGemmModel:
                 ctx,
                 role,
                 next_role if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
+                load_second_role=next_load_role if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
             )
             code_str += pred_pre
             code_str += f"ld1h      {self._b_low(ctx)}.h, {pred}/z, [{regs.pointers.pB0}, #{low_offset}, MUL VL]\n"
@@ -732,20 +819,49 @@ class GeneralGemmModel:
             return code_str
         return f"{ldopt}      {dst}{get_ld_element_suffix(ctx)}, {_load_predicate(ctx, role)}, [{regs.pointers.pB0}, #{lane}, MUL VL]\n"
 
-    def load_a0b0_last_k(self, ctx, a0, a_role, b0, b_role, ldopt, ldaopt, a1=None, b1=None, a1_role=None, b1_role=None):
-        return self.load_a0b0(ctx, a0, a_role, b0, b_role, ldopt, ldaopt, a1=a1, b1=b1, a1_role=a1_role, b1_role=b1_role)
+    def load_a0b0_last_k(
+        self,
+        ctx,
+        a0,
+        a_role,
+        b0,
+        b_role,
+        ldopt,
+        ldaopt,
+        a1=None,
+        b1=None,
+        a1_role=None,
+        b1_role=None,
+        a1_load_role=None,
+        b1_load_role=None,
+    ):
+        return self.load_a0b0(
+            ctx,
+            a0,
+            a_role,
+            b0,
+            b_role,
+            ldopt,
+            ldaopt,
+            a1=a1,
+            b1=b1,
+            a1_role=a1_role,
+            b1_role=b1_role,
+            a1_load_role=a1_load_role,
+            b1_load_role=b1_load_role,
+        )
 
-    def load_a1(self, ctx, a1, role, ldopt, ldaopt, a2=None, a2_role=None):
-        return self._gen_general_a(ctx, a1, role, 1, ldaopt, next_dst=a2, next_role=a2_role)
+    def load_a1(self, ctx, a1, role, ldopt, ldaopt, a2=None, a2_role=None, a2_load_role=None):
+        return self._gen_general_a(ctx, a1, role, 1, ldaopt, next_dst=a2, next_role=a2_role, next_load_role=a2_load_role)
 
-    def load_a1_last_k(self, ctx, a1, role, ldopt, ldaopt, a2=None, a2_role=None):
-        return self.load_a1(ctx, a1, role, ldopt, ldaopt, a2=a2, a2_role=a2_role)
+    def load_a1_last_k(self, ctx, a1, role, ldopt, ldaopt, a2=None, a2_role=None, a2_load_role=None):
+        return self.load_a1(ctx, a1, role, ldopt, ldaopt, a2=a2, a2_role=a2_role, a2_load_role=a2_load_role)
 
-    def load_a2(self, ctx, a2, role, ldopt, ldaopt, a3=None, a3_role=None):
-        return self._gen_general_a(ctx, a2, role, 2, ldaopt, next_dst=a3, next_role=a3_role)
+    def load_a2(self, ctx, a2, role, ldopt, ldaopt, a3=None, a3_role=None, a3_load_role=None):
+        return self._gen_general_a(ctx, a2, role, 2, ldaopt, next_dst=a3, next_role=a3_role, next_load_role=a3_load_role)
 
-    def load_a2_last_k(self, ctx, a2, role, ldopt, ldaopt, a3=None, a3_role=None):
-        return self.load_a2(ctx, a2, role, ldopt, ldaopt, a3=a3, a3_role=a3_role)
+    def load_a2_last_k(self, ctx, a2, role, ldopt, ldaopt, a3=None, a3_role=None, a3_load_role=None):
+        return self.load_a2(ctx, a2, role, ldopt, ldaopt, a3=a3, a3_role=a3_role, a3_load_role=a3_load_role)
 
     def load_a3(self, ctx, a3, role, ldopt, ldaopt, a4=None, a4_role=None):
         return self._gen_general_a(ctx, a3, role, 3, ldaopt)
@@ -753,17 +869,17 @@ class GeneralGemmModel:
     def load_a3_last_k(self, ctx, a3, role, ldopt, ldaopt, a4=None, a4_role=None):
         return self.load_a3(ctx, a3, role, ldopt, ldaopt)
 
-    def load_b1(self, ctx, b1, role, ldopt, ldaopt, b2=None, b2_role=None):
-        return self._gen_general_b(ctx, b1, role, 1, ldopt, next_dst=b2, next_role=b2_role)
+    def load_b1(self, ctx, b1, role, ldopt, ldaopt, b2=None, b2_role=None, b2_load_role=None):
+        return self._gen_general_b(ctx, b1, role, 1, ldopt, next_dst=b2, next_role=b2_role, next_load_role=b2_load_role)
 
-    def load_b1_last_k(self, ctx, b1, role, ldopt, ldaopt, b2=None, b2_role=None):
-        return self.load_b1(ctx, b1, role, ldopt, ldaopt, b2=b2, b2_role=b2_role)
+    def load_b1_last_k(self, ctx, b1, role, ldopt, ldaopt, b2=None, b2_role=None, b2_load_role=None):
+        return self.load_b1(ctx, b1, role, ldopt, ldaopt, b2=b2, b2_role=b2_role, b2_load_role=b2_load_role)
 
-    def load_b2(self, ctx, b2, role, ldopt, ldaopt, b3=None, b3_role=None):
-        return self._gen_general_b(ctx, b2, role, 2, ldopt, next_dst=b3, next_role=b3_role)
+    def load_b2(self, ctx, b2, role, ldopt, ldaopt, b3=None, b3_role=None, b3_load_role=None):
+        return self._gen_general_b(ctx, b2, role, 2, ldopt, next_dst=b3, next_role=b3_role, next_load_role=b3_load_role)
 
-    def load_b2_last_k(self, ctx, b2, role, ldopt, ldaopt, b3=None, b3_role=None):
-        return self.load_b2(ctx, b2, role, ldopt, ldaopt, b3=b3, b3_role=b3_role)
+    def load_b2_last_k(self, ctx, b2, role, ldopt, ldaopt, b3=None, b3_role=None, b3_load_role=None):
+        return self.load_b2(ctx, b2, role, ldopt, ldaopt, b3=b3, b3_role=b3_role, b3_load_role=b3_load_role)
 
     def load_b3(self, ctx, b3, role, ldopt, ldaopt, b4=None, b4_role=None):
         return self._gen_general_b(ctx, b3, role, 3, ldopt)

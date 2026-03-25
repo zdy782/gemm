@@ -46,19 +46,74 @@ KERNEL_FUN_MAP_LAST_K = {
 }
 
 
+def _side_is_contiguous(ctx, side):
+    # Pairing remains contig-only, so variant resolution needs the same transpose-derived side capability as the emitters.
+    config = getattr(ctx.model, "config", None)
+    if config is None:
+        return False
+    attr = "a_mode" if side == "a" else "b_mode"
+    return getattr(config, attr, None) == "contiguous"
+
+
+def resolve_kernel_variant(ctx, mvl, nvl, m_fullness, n_fullness, last_k=False):
+    # Collapse loop-selected fullness into one explicit kernel body variant so the tile emitter no longer re-dispatches on MIN_M/MIN_N.
+    if last_k or not (ctx.is_ext_precision() and ctx.use_ext_paired_fast_path()):
+        return "safe"
+
+    a_contig = _side_is_contiguous(ctx, "a")
+    b_contig = _side_is_contiguous(ctx, "b")
+    key = (mvl, nvl)
+
+    if key == ("1VL", "1VL") or (not a_contig and not b_contig):
+        return "safe"
+    if key == ("1VL", "2VL"):
+        return "full" if b_contig and n_fullness == "exact_2vl" else "safe"
+    if key == ("2VL", "1VL"):
+        return "full" if a_contig and m_fullness == "exact_2vl" else "safe"
+    if key == ("1VL", "3VL"):
+        return "hybrid" if b_contig else "safe"
+    if key == ("3VL", "1VL"):
+        return "hybrid" if a_contig else "safe"
+    if key == ("1VL", "4VL"):
+        if not b_contig:
+            return "safe"
+        if n_fullness == "exact_4vl":
+            return "full"
+        if n_fullness == "lead_2vl_only":
+            return "lead"
+        return "safe"
+    if key == ("4VL", "1VL"):
+        if not a_contig:
+            return "safe"
+        if m_fullness == "exact_4vl":
+            return "full"
+        if m_fullness == "lead_2vl_only":
+            return "lead"
+        return "safe"
+    if key == ("2VL", "2VL"):
+        if a_contig and b_contig:
+            return "full" if m_fullness == "exact_2vl" and n_fullness == "exact_2vl" else "safe"
+        if a_contig:
+            return "full" if m_fullness == "exact_2vl" else "safe"
+        if b_contig:
+            return "full" if n_fullness == "exact_2vl" else "safe"
+        return "safe"
+    return "safe"
+
+
 def _get_kernel_fn(mvl, nvl, last_k=False):
     # Select the regular or last-k kernel table without making the callers repeat the map choice.
     kernel_map = KERNEL_FUN_MAP_LAST_K if last_k else KERNEL_FUN_MAP
     return kernel_map[(mvl, nvl)]
 
 
-def _gen_kernel_variant(ctx, variant_idx, mvl, nvl, last_k=False, load_inst=None):
+def _gen_kernel_variant(ctx, variant_idx, mvl, nvl, last_k=False, load_inst=None, kernel_variant="safe"):
     # Materialize one register-variant copy of the kernel body, optionally forcing a specific load opcode.
     kernel_fn = _get_kernel_fn(mvl, nvl, last_k=last_k)
     variant = ctx.registers.kernel_variant(variant_idx)
     if load_inst is None:
-        return kernel_fn(ctx, *variant.a_regs, *variant.b_regs)
-    return kernel_fn(ctx, *variant.a_regs, *variant.b_regs, load_inst)
+        return kernel_fn(ctx, *variant.a_regs, *variant.b_regs, variant=kernel_variant)
+    return kernel_fn(ctx, *variant.a_regs, *variant.b_regs, load_inst, variant=kernel_variant)
 
 
 def _kernel_load_inst(ctx):
@@ -68,65 +123,75 @@ def _kernel_load_inst(ctx):
     return LD1 if ctx.spec.gemm_type is GemmType.SMALL else LDNT1
 
 
-def _gen_kernel_bc(ctx, mvl, nvl, last_k=False, load_inst=None):
+def _gen_kernel_bc(ctx, mvl, nvl, last_k=False, load_inst=None, kernel_variant="safe"):
     code_parts = []
     # Reusing the four register variants twice matches the handwritten K-body cadence and keeps scheduling regular.
     for variant_idx in (0, 1, 2, 3, 0, 1, 2, 3):
-        code_parts.append(_gen_kernel_variant(ctx, variant_idx, mvl, nvl, last_k=last_k, load_inst=load_inst))
+        code_parts.append(
+            _gen_kernel_variant(
+                ctx,
+                variant_idx,
+                mvl,
+                nvl,
+                last_k=last_k,
+                load_inst=load_inst,
+                kernel_variant=kernel_variant,
+            )
+        )
     return "".join(code_parts)
 
 
-def kernel_m0(ctx, mvl, nvl):
-    return _gen_kernel_variant(ctx, 0, mvl, nvl)
+def kernel_m0(ctx, mvl, nvl, kernel_variant="safe"):
+    return _gen_kernel_variant(ctx, 0, mvl, nvl, kernel_variant=kernel_variant)
 
 
-def kernel_m1(ctx, mvl, nvl):
-    return _gen_kernel_variant(ctx, 1, mvl, nvl)
+def kernel_m1(ctx, mvl, nvl, kernel_variant="safe"):
+    return _gen_kernel_variant(ctx, 1, mvl, nvl, kernel_variant=kernel_variant)
 
 
-def kernel_m2(ctx, mvl, nvl):
-    return _gen_kernel_variant(ctx, 2, mvl, nvl)
+def kernel_m2(ctx, mvl, nvl, kernel_variant="safe"):
+    return _gen_kernel_variant(ctx, 2, mvl, nvl, kernel_variant=kernel_variant)
 
 
-def kernel_m3(ctx, mvl, nvl):
-    return _gen_kernel_variant(ctx, 3, mvl, nvl)
+def kernel_m3(ctx, mvl, nvl, kernel_variant="safe"):
+    return _gen_kernel_variant(ctx, 3, mvl, nvl, kernel_variant=kernel_variant)
 
 
-def kernel_m0_last_k(ctx, mvl, nvl):
-    return _gen_kernel_variant(ctx, 0, mvl, nvl, last_k=True)
+def kernel_m0_last_k(ctx, mvl, nvl, kernel_variant="safe"):
+    return _gen_kernel_variant(ctx, 0, mvl, nvl, last_k=True, kernel_variant=kernel_variant)
 
 
-def kernel_m1_last_k(ctx, mvl, nvl):
-    return _gen_kernel_variant(ctx, 1, mvl, nvl, last_k=True)
+def kernel_m1_last_k(ctx, mvl, nvl, kernel_variant="safe"):
+    return _gen_kernel_variant(ctx, 1, mvl, nvl, last_k=True, kernel_variant=kernel_variant)
 
 
-def kernel_m2_last_k(ctx, mvl, nvl):
-    return _gen_kernel_variant(ctx, 2, mvl, nvl, last_k=True)
+def kernel_m2_last_k(ctx, mvl, nvl, kernel_variant="safe"):
+    return _gen_kernel_variant(ctx, 2, mvl, nvl, last_k=True, kernel_variant=kernel_variant)
 
 
-def kernel_m3_last_k(ctx, mvl, nvl):
-    return _gen_kernel_variant(ctx, 3, mvl, nvl, last_k=True)
+def kernel_m3_last_k(ctx, mvl, nvl, kernel_variant="safe"):
+    return _gen_kernel_variant(ctx, 3, mvl, nvl, last_k=True, kernel_variant=kernel_variant)
 
 
-def kernel_ldnt1d_m0(ctx, mvl, nvl):
-    return _gen_kernel_variant(ctx, 0, mvl, nvl, load_inst=_kernel_load_inst(ctx))
+def kernel_ldnt1d_m0(ctx, mvl, nvl, kernel_variant="safe"):
+    return _gen_kernel_variant(ctx, 0, mvl, nvl, load_inst=_kernel_load_inst(ctx), kernel_variant=kernel_variant)
 
 
-def kernel_ldnt1d_m1(ctx, mvl, nvl):
-    return _gen_kernel_variant(ctx, 1, mvl, nvl, load_inst=_kernel_load_inst(ctx))
+def kernel_ldnt1d_m1(ctx, mvl, nvl, kernel_variant="safe"):
+    return _gen_kernel_variant(ctx, 1, mvl, nvl, load_inst=_kernel_load_inst(ctx), kernel_variant=kernel_variant)
 
 
-def kernel_ldnt1d_m2(ctx, mvl, nvl):
-    return _gen_kernel_variant(ctx, 2, mvl, nvl, load_inst=_kernel_load_inst(ctx))
+def kernel_ldnt1d_m2(ctx, mvl, nvl, kernel_variant="safe"):
+    return _gen_kernel_variant(ctx, 2, mvl, nvl, load_inst=_kernel_load_inst(ctx), kernel_variant=kernel_variant)
 
 
-def kernel_ldnt1d_m3(ctx, mvl, nvl):
-    return _gen_kernel_variant(ctx, 3, mvl, nvl, load_inst=_kernel_load_inst(ctx))
+def kernel_ldnt1d_m3(ctx, mvl, nvl, kernel_variant="safe"):
+    return _gen_kernel_variant(ctx, 3, mvl, nvl, load_inst=_kernel_load_inst(ctx), kernel_variant=kernel_variant)
 
 
-def kernel_bc(ctx, mvl, nvl):
-    return _gen_kernel_bc(ctx, mvl, nvl)
+def kernel_bc(ctx, mvl, nvl, kernel_variant="safe"):
+    return _gen_kernel_bc(ctx, mvl, nvl, kernel_variant=kernel_variant)
 
 
-def kernel_ldntb_bc(ctx, mvl, nvl):
-    return _gen_kernel_bc(ctx, mvl, nvl, load_inst=_kernel_load_inst(ctx))
+def kernel_ldntb_bc(ctx, mvl, nvl, kernel_variant="safe"):
+    return _gen_kernel_bc(ctx, mvl, nvl, load_inst=_kernel_load_inst(ctx), kernel_variant=kernel_variant)

@@ -12,6 +12,36 @@ def _gen_primary_n_predicate(ctx):
     return f"whilelt     {regs.predicates.n_main}.s, {regs.counters.TMP_CNT}, {regs.dims.MIN_N}\n"
 
 
+def _gen_n_fullness_dispatch(ctx, multiplier, m_size, label_base):
+    # Split one chosen N shape into exact-full or partial variants before handing control to the M loop.
+    regs = ctx.registers
+    if multiplier == 4:
+        exact_label = f".n_fullness_4vl_exact_{label_base}"
+        end_label = f".n_fullness_4vl_end_{label_base}"
+        code_str = f"cmp     {regs.dims.MIN_N}, #{tile_size_from_vl(4)}\n"
+        code_str += f"blt     {exact_label}\n"
+        code_str += kernel_mm_loop_L2(ctx, m_size, f"{label_base}_n4full", "4VL", "exact_4vl")
+        code_str += f"b       {end_label}\n"
+        code_str += f"{exact_label}:\n"
+        code_str += kernel_mm_loop_L2(ctx, m_size, f"{label_base}_n4lead", "4VL", "lead_2vl_only")
+        code_str += f"{end_label}:\n"
+        return code_str
+    if multiplier == 3:
+        return kernel_mm_loop_L2(ctx, m_size, f"{label_base}_n3hybrid", "3VL", "two_plus_one")
+    if multiplier == 2:
+        exact_label = f".n_fullness_2vl_partial_{label_base}"
+        end_label = f".n_fullness_2vl_end_{label_base}"
+        code_str = f"cmp     {regs.dims.MIN_N}, #{tile_size_from_vl(2)}\n"
+        code_str += f"blt     {exact_label}\n"
+        code_str += kernel_mm_loop_L2(ctx, m_size, f"{label_base}_n2full", "2VL", "exact_2vl")
+        code_str += f"b       {end_label}\n"
+        code_str += f"{exact_label}:\n"
+        code_str += kernel_mm_loop_L2(ctx, m_size, f"{label_base}_n2partial", "2VL", "partial_2vl")
+        code_str += f"{end_label}:\n"
+        return code_str
+    return kernel_mm_loop_L2(ctx, m_size, f"{label_base}_n1", "1VL", "single")
+
+
 def _gen_n_loop_block(ctx, multiplier, m_size):
     # Emit one N-width candidate block that falls through to the next narrower width when the remainder is too small.
     regs = ctx.registers
@@ -29,7 +59,7 @@ def _gen_n_loop_block(ctx, multiplier, m_size):
         code_str += f"add     {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, #{vl1}\n"
     code_str += f"whilelt     {regs.predicates.n_tail}{pred_suffix}, {regs.counters.TMP_CNT}, {regs.dims.MIN_N}\n"
     code_str += f"add     {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, #{vl1}\n"
-    code_str += kernel_mm_loop_L2(ctx, m_size, "k_loop_m", f"{multiplier}VL")
+    code_str += _gen_n_fullness_dispatch(ctx, multiplier, m_size, f"k_loop_m_{multiplier}vl")
     return code_str
 
 
@@ -101,7 +131,7 @@ def kernel_mm_loop_n(ctx, n_size=None, m_size=None):
     code_str += f"sub     {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}\n"
     code_str += f"whilelt     {regs.predicates.n_main}{get_predicate_suffix(ctx)}, {regs.counters.TMP_CNT}, {regs.dims.MIN_N}\n"
     code_str += f"add     {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, #{get_whilelt_increment(ctx)}\n"
-    code_str += kernel_mm_loop_L2(ctx, m_size, "k_loop_m", "1VL")
+    code_str += _gen_n_fullness_dispatch(ctx, 1, m_size, "k_loop_m_1vl")
     code_str += f".end_of_loops_m:\n"
     code_str += f"add     {regs.counters.counterJ}, {regs.counters.counterJ}, {regs.dims.MIN_N}\n"
     code_str += ctx.model.kernel_mm_loop_n_post_func(ctx)
