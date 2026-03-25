@@ -12,6 +12,7 @@ Thumbs.db
 .env.*
 local/
 tmp/
+ref/
 
 # Local virtualization and container artifacts
 *.qcow2
