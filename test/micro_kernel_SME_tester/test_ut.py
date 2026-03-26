@@ -2,7 +2,7 @@ import os
 import csv
 import argparse
 
-from test_runner import run_single_test, setup_environment
+from test_runner import run_range_test, run_single_test, setup_environment
 
 
 current_path = os.path.dirname(os.path.abspath(__file__))
@@ -20,12 +20,10 @@ def _run_mode(testcases, pack_mode: str):
 
     for idx, tc in enumerate(testcases, 1):
         try:
-            M = int(tc.get("M", 0))
-            N = int(tc.get("N", 0))
-            K = int(tc.get("K", 0))
-            lda = int(tc.get("lda", M))
-            ldb = int(tc.get("ldb", K))
-            ldc = int(tc.get("ldc", M))
+            M_spec = tc.get("M", "0")
+            N_spec = tc.get("N", "0")
+            K_spec = tc.get("K", "0")
+            is_range_case = any(":" in str(value) for value in (M_spec, N_spec, K_spec))
             gemm_type = tc["gemm_type"]
             transA = tc["transA"]
             transB = tc["transB"]
@@ -36,21 +34,49 @@ def _run_mode(testcases, pack_mode: str):
 
             print(f"\n[{idx}/{total}] Running test case:")
             print(f"  pack_mode={pack_mode}")
-            print(f"  M={M}, N={N}, K={K}, lda={lda}, ldb={ldb}, ldc={ldc}")
+            print(
+                f"  M={M_spec}, N={N_spec}, K={K_spec}, "
+                f"lda={tc.get('lda', 'auto')}, ldb={tc.get('ldb', 'auto')}, ldc={tc.get('ldc', 'auto')}"
+            )
             print(
                 f"  gemm_type={gemm_type}, transA={transA}, transB={transB}, "
                 f"data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}"
             )
 
-            ok = run_single_test(
-                M, N, K, lda, ldb, ldc,
-                gemm_type, transA, transB, repeat,
-                data_type=data_type,
-                m_vl=m_vl,
-                n_vl=n_vl,
-                pack_mode=pack_mode,
-                verbose=True,
-            )
+            if is_range_case:
+                ok = run_range_test(
+                    M_spec,
+                    N_spec,
+                    K_spec,
+                    tc.get("lda", "auto"),
+                    tc.get("ldb", "auto"),
+                    tc.get("ldc", "auto"),
+                    gemm_type,
+                    transA,
+                    transB,
+                    repeat,
+                    data_type=data_type,
+                    m_vl=m_vl,
+                    n_vl=n_vl,
+                    pack_mode=pack_mode,
+                    verbose=True,
+                )
+            else:
+                M = int(M_spec)
+                N = int(N_spec)
+                K = int(K_spec)
+                lda = int(tc.get("lda", M))
+                ldb = int(tc.get("ldb", K))
+                ldc = int(tc.get("ldc", M))
+                ok = run_single_test(
+                    M, N, K, lda, ldb, ldc,
+                    gemm_type, transA, transB, repeat,
+                    data_type=data_type,
+                    m_vl=m_vl,
+                    n_vl=n_vl,
+                    pack_mode=pack_mode,
+                    verbose=True,
+                )
 
             if ok:
                 passed += 1
@@ -60,8 +86,10 @@ def _run_mode(testcases, pack_mode: str):
                 failed_cases.append({
                     "index": idx,
                     "pack_mode": pack_mode,
-                    "M": M, "N": N, "K": K,
-                    "lda": lda, "ldb": ldb, "ldc": ldc,
+                    "M": M_spec, "N": N_spec, "K": K_spec,
+                    "lda": tc.get("lda", "auto"),
+                    "ldb": tc.get("ldb", "auto"),
+                    "ldc": tc.get("ldc", "auto"),
                     "gemm_type": gemm_type,
                     "transA": transA,
                     "transB": transB,
@@ -116,9 +144,12 @@ def _run_mode(testcases, pack_mode: str):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pack-mode", type=str, default="nopack", choices=["nopack", "packed", "both"])
+    parser.add_argument("--testcases", type=str, default=None)
     args = parser.parse_args()
 
-    testcases_path = os.path.join(current_path, "testcases_ut.csv")
+    default_range_path = os.path.join(current_path, "testcases_ut_range.csv")
+    default_single_path = os.path.join(current_path, "testcases_ut.csv")
+    testcases_path = args.testcases or (default_range_path if os.path.exists(default_range_path) else default_single_path)
     required_columns = {
         "M", "N", "K", "lda", "ldb", "ldc",
         "gemm_type", "transA", "transB", "REPEAT",
