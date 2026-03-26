@@ -40,4 +40,6 @@ DEFAULT_MODEL_REGISTRY = ModelRegistry(
 
 
 def resolve_model(spec: KernelSpec):
+    if spec.gemm_type is GemmType.SMALL and spec.is_packed():
+        return small_nt_model
     return DEFAULT_MODEL_REGISTRY.resolve(spec)

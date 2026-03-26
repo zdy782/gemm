@@ -76,7 +76,12 @@ def generate_sme_asm(
     )
     assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
     func_name, _, _ = _build_symbol_names(spec, uniq_id)
-    ctx = GenerationContext(spec=spec, registers=DEFAULT_REGISTER_PLAN, model=resolve_model(spec))
+    kernel_spec = spec.kernel_view_spec()
+    ctx = GenerationContext(
+        spec=kernel_spec,
+        registers=DEFAULT_REGISTER_PLAN,
+        model=resolve_model(kernel_spec),
+    )
     kernel_code = laf_asm_code(ctx, func_name)
     
     if not kernel_code:

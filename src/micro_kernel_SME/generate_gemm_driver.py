@@ -48,7 +48,7 @@ def generate_gemm_driver(spec, kernel_func_name: str, driver_func_name: str) -> 
         a_pack_stmt = (
             f"{incopy_name}(minL, minI, A + ls + is * lda, lda, A_pack);\n"
             f"                sa = A_pack;\n"
-            f"                lda_kernel = minL;\n"
+            f"                lda_kernel = minI;\n"
         )
         a_direct_stmt = (
             f"sa = A + ls + is * lda;\n"
@@ -59,7 +59,7 @@ def generate_gemm_driver(spec, kernel_func_name: str, driver_func_name: str) -> 
         b_pack_stmt = (
             f"{oncopy_name}(minL, minJ, B + ls + js * ldb, ldb, B_pack);\n"
             f"            sb = B_pack;\n"
-            f"            ldb_kernel = minL;\n"
+            f"            ldb_kernel = minJ;\n"
         )
         b_direct_stmt = (
             f"sb = B + ls + js * ldb;\n"

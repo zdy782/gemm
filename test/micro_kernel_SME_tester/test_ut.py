@@ -7,42 +7,15 @@ from test_runner import run_single_test, setup_environment
 
 current_path = os.path.dirname(os.path.abspath(__file__))
 setup_environment()
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--pack-mode", type=str, default="nopack", choices=["nopack", "packed"])
-    args = parser.parse_args()
 
-    testcases_path = os.path.join(current_path, "testcases_ut.csv")
-    required_columns = {
-        "M", "N", "K", "lda", "ldb", "ldc",
-        "gemm_type", "transA", "transB", "REPEAT",
-        "data_type", "m_vl", "n_vl",
-    }
 
-    if not os.path.exists(testcases_path):
-        print(f"[ERROR] Testcases file not found: {testcases_path}")
-        print("[INFO] Running default test case...")
-        if run_single_test(16, 64, 16, 16, 64, 64, "small", "N", "N", 64, pack_mode=args.pack_mode):
-            print("\n[PASS] Default test case passed")
-        else:
-            print("\n[FAIL] Default test case failed")
-        return
-
-    with open(testcases_path, "r") as f:
-        reader = csv.DictReader(f)
-        missing_columns = sorted(required_columns - set(reader.fieldnames or []))
-        if missing_columns:
-            raise ValueError(
-                f"CSV is missing required columns: {', '.join(missing_columns)}"
-            )
-        testcases = list(reader)
-
+def _run_mode(testcases, pack_mode: str):
     total = len(testcases)
     passed = 0
     failed = 0
     failed_cases = []
 
-    print(f"\n[INFO] Start running {total} test cases...")
+    print(f"\n[INFO] Start running {total} test cases with pack_mode={pack_mode}...")
     print("=" * 80)
 
     for idx, tc in enumerate(testcases, 1):
@@ -62,6 +35,7 @@ def main():
             n_vl = int(tc["n_vl"])
 
             print(f"\n[{idx}/{total}] Running test case:")
+            print(f"  pack_mode={pack_mode}")
             print(f"  M={M}, N={N}, K={K}, lda={lda}, ldb={ldb}, ldc={ldc}")
             print(
                 f"  gemm_type={gemm_type}, transA={transA}, transB={transB}, "
@@ -74,7 +48,7 @@ def main():
                 data_type=data_type,
                 m_vl=m_vl,
                 n_vl=n_vl,
-                pack_mode=args.pack_mode,
+                pack_mode=pack_mode,
                 verbose=True,
             )
 
@@ -85,6 +59,7 @@ def main():
                 failed += 1
                 failed_cases.append({
                     "index": idx,
+                    "pack_mode": pack_mode,
                     "M": M, "N": N, "K": K,
                     "lda": lda, "ldb": ldb, "ldc": ldc,
                     "gemm_type": gemm_type,
@@ -99,6 +74,7 @@ def main():
             failed += 1
             failed_cases.append({
                 "index": idx,
+                "pack_mode": pack_mode,
                 "error": f"Parse/Execute exception: {e}",
                 "raw_data": tc,
             })
@@ -106,14 +82,15 @@ def main():
         print("-" * 80)
 
     print("\n" + "=" * 80)
-    print(f"[TEST SUMMARY] Total: {total}, Passed: {passed}, Failed: {failed}")
+    print(f"[TEST SUMMARY] pack_mode={pack_mode}, Total: {total}, Passed: {passed}, Failed: {failed}")
     print("=" * 80)
 
     if failed > 0:
-        print(f"\n[FAILED CASES DETAIL] (Total: {failed} cases)")
+        print(f"\n[FAILED CASES DETAIL] (pack_mode={pack_mode}, Total: {failed} cases)")
         print("-" * 80)
         for i, case in enumerate(failed_cases, 1):
             print(f"\n[{i}] Test case #{case['index']}:")
+            print(f"  pack_mode={case['pack_mode']}")
             if "error" in case:
                 print(f"  Error: {case['error']}")
                 print(f"  Raw data: {case['raw_data']}")
@@ -126,6 +103,60 @@ def main():
                     f"n_vl={case['n_vl']}"
                 )
         print("-" * 80)
+
+    return {
+        "pack_mode": pack_mode,
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "failed_cases": failed_cases,
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pack-mode", type=str, default="nopack", choices=["nopack", "packed", "both"])
+    args = parser.parse_args()
+
+    testcases_path = os.path.join(current_path, "testcases_ut.csv")
+    required_columns = {
+        "M", "N", "K", "lda", "ldb", "ldc",
+        "gemm_type", "transA", "transB", "REPEAT",
+        "data_type", "m_vl", "n_vl",
+    }
+
+    if not os.path.exists(testcases_path):
+        print(f"[ERROR] Testcases file not found: {testcases_path}")
+        print("[INFO] Running default test case...")
+        pack_modes = ["nopack", "packed"] if args.pack_mode == "both" else [args.pack_mode]
+        ok = True
+        for pack_mode in pack_modes:
+            ok = run_single_test(16, 64, 16, 16, 64, 64, "small", "N", "N", 64, pack_mode=pack_mode) and ok
+        if ok:
+            print("\n[PASS] Default test case passed")
+        else:
+            print("\n[FAIL] Default test case failed")
+        return
+
+    with open(testcases_path, "r") as f:
+        reader = csv.DictReader(f)
+        missing_columns = sorted(required_columns - set(reader.fieldnames or []))
+        if missing_columns:
+            raise ValueError(
+                f"CSV is missing required columns: {', '.join(missing_columns)}"
+            )
+        testcases = list(reader)
+
+    pack_modes = ["nopack", "packed"] if args.pack_mode == "both" else [args.pack_mode]
+    results = [_run_mode(testcases, pack_mode) for pack_mode in pack_modes]
+
+    if len(results) > 1:
+        total = sum(result["total"] for result in results)
+        passed = sum(result["passed"] for result in results)
+        failed = sum(result["failed"] for result in results)
+        print("\n" + "=" * 80)
+        print(f"[TEST SUMMARY] pack_mode=both, Total: {total}, Passed: {passed}, Failed: {failed}")
+        print("=" * 80)
 
 
 if __name__ == "__main__":

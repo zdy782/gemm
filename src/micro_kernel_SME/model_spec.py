@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -113,6 +113,18 @@ class KernelSpec:
         if self.is_fp16():
             return "shgemm"
         return "sgemm"
+
+    def kernel_view_spec(self) -> "KernelSpec":
+        # Packed small kernels execute against one physical view: A is packed as
+        # logical `N`, B is packed as logical `T`, so the inner kernel should
+        # always resolve the contiguous small NT model.
+        if not self.is_packed() or self.gemm_type is not GemmType.SMALL:
+            return self
+        return replace(
+            self,
+            trans_a=Transpose.NORMAL,
+            trans_b=Transpose.TRANSPOSED,
+        )
 
 @dataclass(frozen=True)
 class GenerationContext:
