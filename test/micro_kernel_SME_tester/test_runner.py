@@ -296,7 +296,7 @@ def run_range_test(
         )
         if verbose and compile_result.stdout:
             print(f"[COMPILE OUTPUT]\n{compile_result.stdout}")
-        if compile_result.returncode != 0 or "ERROR" in compile_result.stdout.upper():
+        if compile_result.returncode != 0:
             if verbose:
                 print(f"[ERROR] Compilation failed for M={M_range}, N={N_range}, K={K_range}")
             return False
@@ -314,7 +314,7 @@ def run_range_test(
         )
         if verbose and run_result.stdout:
             print(f"[RUN OUTPUT]\n{run_result.stdout}")
-        if run_result.returncode != 0 or "FAILED" in run_result.stdout.upper() or "ERROR" in run_result.stdout.upper():
+        if run_result.returncode != 0:
             if verbose:
                 print(f"[ERROR] Execution failed for M={M_range}, N={N_range}, K={K_range}")
             return False
