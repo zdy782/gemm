@@ -1,4 +1,4 @@
-def generate_makefile(data_type="fp32", pack_mode="nopack"):
+def generate_makefile(data_type="fp32"):
     if data_type == "bf16":
         PRECISION_MACRO = "BF16"
         march_flags = "-march=armv9-a+sme+bf16"

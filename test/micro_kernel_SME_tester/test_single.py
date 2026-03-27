@@ -17,7 +17,8 @@ parser.add_argument("--REPEAT", type=int, default=64)
 parser.add_argument("--data_type", type=str, default="fp32", choices=["fp32", "bf16", "fp16"])
 parser.add_argument("--m_vl", type=int, default=1, choices=[1, 2, 3, 4])
 parser.add_argument("--n_vl", type=int, default=4, choices=[1, 2, 3, 4])
-parser.add_argument("--pack-mode", type=str, default="nopack", choices=["nopack", "packed"])
+parser.add_argument("--pack_a", action="store_true")
+parser.add_argument("--pack_b", action="store_true")
 
 args = parser.parse_args()
 
@@ -42,7 +43,8 @@ success = run_single_test(
     data_type=args.data_type,
     m_vl=args.m_vl,
     n_vl=args.n_vl,
-    pack_mode=args.pack_mode,
+    pack_a=args.pack_a,
+    pack_b=args.pack_b,
     verbose=True
 )
 

@@ -22,11 +22,6 @@ class Transpose(str, Enum):
     TRANSPOSED = "T"
 
 
-class PackMode(str, Enum):
-    NOPACK = "nopack"
-    PACKED = "packed"
-
-
 @dataclass(frozen=True)
 class TileShape:
     m_vl: int
@@ -46,7 +41,8 @@ class KernelSpec:
     trans_b: Transpose
     precision: Precision
     tile: TileShape
-    pack_mode: PackMode = PackMode.NOPACK
+    pack_a: bool = False
+    pack_b: bool = False
 
     @classmethod
     def from_args(
@@ -63,7 +59,8 @@ class KernelSpec:
         data_type: str,
         m_vl: int,
         n_vl: int,
-        pack_mode: str = "nopack",
+        pack_a: bool = False,
+        pack_b: bool = False,
     ) -> "KernelSpec":
         return cls(
             M=M,
@@ -77,7 +74,8 @@ class KernelSpec:
             trans_b=Transpose(transB),
             precision=Precision(data_type),
             tile=TileShape(m_vl=m_vl, n_vl=n_vl),
-            pack_mode=PackMode(pack_mode),
+            pack_a=pack_a,
+            pack_b=pack_b,
         )
 
     @property
@@ -104,9 +102,6 @@ class KernelSpec:
     def is_ext_precision(self) -> bool:
         return self.precision in (Precision.BF16, Precision.FP16)
 
-    def is_packed(self) -> bool:
-        return self.pack_mode is PackMode.PACKED
-
     def gemm_prefix(self) -> str:
         if self.is_bf16():
             return "sbgemm"
@@ -114,16 +109,30 @@ class KernelSpec:
             return "shgemm"
         return "sgemm"
 
+    def pack_suffix(self) -> str:
+        if self.pack_a and self.pack_b:
+            return "packab"
+        if self.pack_a:
+            return "packa"
+        if self.pack_b:
+            return "packb"
+        return "nopack"
+
+    def effective_a_contiguous(self) -> bool:
+        return self.pack_a or self.trans_a is Transpose.NORMAL
+
+    def effective_b_contiguous(self) -> bool:
+        return self.pack_b or self.trans_b is Transpose.TRANSPOSED
+
     def kernel_view_spec(self) -> "KernelSpec":
-        # Packed small kernels execute against one physical view: A is packed as
-        # logical `N`, B is packed as logical `T`, so the inner kernel should
-        # always resolve the contiguous small NT model.
-        if not self.is_packed() or self.gemm_type is not GemmType.SMALL:
+        if self.gemm_type is not GemmType.SMALL:
             return self
+        trans_a = Transpose.NORMAL if self.pack_a else self.trans_a
+        trans_b = Transpose.TRANSPOSED if self.pack_b else self.trans_b
         return replace(
             self,
-            trans_a=Transpose.NORMAL,
-            trans_b=Transpose.TRANSPOSED,
+            trans_a=trans_a,
+            trans_b=trans_b,
         )
 
 @dataclass(frozen=True)

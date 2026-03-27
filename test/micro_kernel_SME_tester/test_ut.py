@@ -2,20 +2,21 @@ import os
 import csv
 import argparse
 
-from test_runner import run_range_test, run_single_test, setup_environment
+from test_runner import pack_label, run_range_test, run_single_test, setup_environment
 
 
 current_path = os.path.dirname(os.path.abspath(__file__))
 setup_environment()
 
 
-def _run_mode(testcases, pack_mode: str):
+def _run_mode(testcases, pack_a: bool, pack_b: bool):
     total = len(testcases)
     passed = 0
     failed = 0
     failed_cases = []
+    current_pack = pack_label(pack_a, pack_b)
 
-    print(f"\n[INFO] Start running {total} test cases with pack_mode={pack_mode}...")
+    print(f"\n[INFO] Start running {total} test cases with pack={current_pack}...")
     print("=" * 80)
 
     for idx, tc in enumerate(testcases, 1):
@@ -33,7 +34,7 @@ def _run_mode(testcases, pack_mode: str):
             n_vl = int(tc["n_vl"])
 
             print(f"\n[{idx}/{total}] Running test case:")
-            print(f"  pack_mode={pack_mode}")
+            print(f"  pack={current_pack}, pack_a={pack_a}, pack_b={pack_b}")
             print(
                 f"  M={M_spec}, N={N_spec}, K={K_spec}, "
                 f"lda={tc.get('lda', 'auto')}, ldb={tc.get('ldb', 'auto')}, ldc={tc.get('ldc', 'auto')}"
@@ -58,7 +59,8 @@ def _run_mode(testcases, pack_mode: str):
                     data_type=data_type,
                     m_vl=m_vl,
                     n_vl=n_vl,
-                    pack_mode=pack_mode,
+                    pack_a=pack_a,
+                    pack_b=pack_b,
                     verbose=True,
                 )
             else:
@@ -74,7 +76,8 @@ def _run_mode(testcases, pack_mode: str):
                     data_type=data_type,
                     m_vl=m_vl,
                     n_vl=n_vl,
-                    pack_mode=pack_mode,
+                    pack_a=pack_a,
+                    pack_b=pack_b,
                     verbose=True,
                 )
 
@@ -85,7 +88,9 @@ def _run_mode(testcases, pack_mode: str):
                 failed += 1
                 failed_cases.append({
                     "index": idx,
-                    "pack_mode": pack_mode,
+                    "pack": current_pack,
+                    "pack_a": pack_a,
+                    "pack_b": pack_b,
                     "M": M_spec, "N": N_spec, "K": K_spec,
                     "lda": tc.get("lda", "auto"),
                     "ldb": tc.get("ldb", "auto"),
@@ -102,7 +107,9 @@ def _run_mode(testcases, pack_mode: str):
             failed += 1
             failed_cases.append({
                 "index": idx,
-                "pack_mode": pack_mode,
+                "pack": current_pack,
+                "pack_a": pack_a,
+                "pack_b": pack_b,
                 "error": f"Parse/Execute exception: {e}",
                 "raw_data": tc,
             })
@@ -110,15 +117,15 @@ def _run_mode(testcases, pack_mode: str):
         print("-" * 80)
 
     print("\n" + "=" * 80)
-    print(f"[TEST SUMMARY] pack_mode={pack_mode}, Total: {total}, Passed: {passed}, Failed: {failed}")
+    print(f"[TEST SUMMARY] pack={current_pack}, Total: {total}, Passed: {passed}, Failed: {failed}")
     print("=" * 80)
 
     if failed > 0:
-        print(f"\n[FAILED CASES DETAIL] (pack_mode={pack_mode}, Total: {failed} cases)")
+        print(f"\n[FAILED CASES DETAIL] (pack={current_pack}, Total: {failed} cases)")
         print("-" * 80)
         for i, case in enumerate(failed_cases, 1):
             print(f"\n[{i}] Test case #{case['index']}:")
-            print(f"  pack_mode={case['pack_mode']}")
+            print(f"  pack={case['pack']}, pack_a={case['pack_a']}, pack_b={case['pack_b']}")
             if "error" in case:
                 print(f"  Error: {case['error']}")
                 print(f"  Raw data: {case['raw_data']}")
@@ -133,7 +140,9 @@ def _run_mode(testcases, pack_mode: str):
         print("-" * 80)
 
     return {
-        "pack_mode": pack_mode,
+        "pack": current_pack,
+        "pack_a": pack_a,
+        "pack_b": pack_b,
         "total": total,
         "passed": passed,
         "failed": failed,
@@ -143,7 +152,8 @@ def _run_mode(testcases, pack_mode: str):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pack-mode", type=str, default="nopack", choices=["nopack", "packed", "both"])
+    parser.add_argument("--pack_a", action="store_true")
+    parser.add_argument("--pack_b", action="store_true")
     parser.add_argument("--testcases", type=str, default=None)
     args = parser.parse_args()
 
@@ -159,10 +169,10 @@ def main():
     if not os.path.exists(testcases_path):
         print(f"[ERROR] Testcases file not found: {testcases_path}")
         print("[INFO] Running default test case...")
-        pack_modes = ["nopack", "packed"] if args.pack_mode == "both" else [args.pack_mode]
-        ok = True
-        for pack_mode in pack_modes:
-            ok = run_single_test(16, 64, 16, 16, 64, 64, "small", "N", "N", 64, pack_mode=pack_mode) and ok
+        ok = run_single_test(
+            16, 64, 16, 16, 64, 64, "small", "N", "N", 64,
+            pack_a=args.pack_a, pack_b=args.pack_b,
+        )
         if ok:
             print("\n[PASS] Default test case passed")
         else:
@@ -178,16 +188,7 @@ def main():
             )
         testcases = list(reader)
 
-    pack_modes = ["nopack", "packed"] if args.pack_mode == "both" else [args.pack_mode]
-    results = [_run_mode(testcases, pack_mode) for pack_mode in pack_modes]
-
-    if len(results) > 1:
-        total = sum(result["total"] for result in results)
-        passed = sum(result["passed"] for result in results)
-        failed = sum(result["failed"] for result in results)
-        print("\n" + "=" * 80)
-        print(f"[TEST SUMMARY] pack_mode=both, Total: {total}, Passed: {passed}, Failed: {failed}")
-        print("=" * 80)
+    _run_mode(testcases, args.pack_a, args.pack_b)
 
 
 if __name__ == "__main__":

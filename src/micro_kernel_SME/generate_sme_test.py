@@ -13,8 +13,7 @@ def build_symbol_names(spec: KernelSpec, uniq_id: str):
     prefix = spec.gemm_prefix()
     return (
         f"{prefix}_kernel_{suffix}",
-        f"{prefix}_nopack_{suffix}",
-        f"{prefix}_packed_{suffix}",
+        f"{prefix}_{spec.pack_suffix()}_{suffix}",
     )
 
 
@@ -58,7 +57,8 @@ def generate_sme_asm(
     data_type: str = "fp32",
     m_vl: int = 1,
     n_vl: int = 4,
-    pack_mode: str = "nopack",
+    pack_a: bool = False,
+    pack_b: bool = False,
 ):
     """Generate the final `.S` text for one concrete SME kernel.
 
@@ -98,10 +98,11 @@ def generate_sme_asm(
         data_type,
         m_vl,
         n_vl,
-        pack_mode,
+        pack_a,
+        pack_b,
     )
     assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
-    func_name, _, _ = build_symbol_names(spec, uniq_id)
+    func_name, _ = build_symbol_names(spec, uniq_id)
     kernel_spec = spec.kernel_view_spec()
     ctx = GenerationContext(
         spec=kernel_spec,
@@ -131,7 +132,8 @@ def generate_sme_test_cpp(
     data_type: str = "fp32",
     m_vl: int = 1,
     n_vl: int = 4,
-    pack_mode: str = "nopack",
+    pack_a: bool = False,
+    pack_b: bool = False,
 ):
     """Generate C++ test file for SME GEMM kernel
 
@@ -167,7 +169,8 @@ def generate_sme_test_cpp(
         data_type,
         m_vl,
         n_vl,
-        pack_mode,
+        pack_a,
+        pack_b,
     )
     assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
 
@@ -186,8 +189,7 @@ def generate_sme_test_cpp(
     b_size = b_cols * ldb
     c_size = N * ldc
 
-    kernel_func_name, nopack_func_name, packed_func_name = build_symbol_names(spec, uniq_id)
-    entry_func_name = packed_func_name if spec.is_packed() else nopack_func_name
+    _, entry_func_name = build_symbol_names(spec, uniq_id)
 
     cc_code = test_cpp_prelude(guard_name, input_type_include)
 
@@ -211,7 +213,7 @@ void* _mm_malloc(size_t align, size_t sz)
 
 int main()
 {{
-    printf("M={M}, N={N}, K={K}, lda={lda}, ldb={ldb}, ldc={ldc}, transA={transA}, transB={transB}, REPEAT={repeat}, data_type={data_type}, m_vl={m_vl}, n_vl={n_vl} ");
+    printf("M={M}, N={N}, K={K}, lda={lda}, ldb={ldb}, ldc={ldc}, transA={transA}, transB={transB}, REPEAT={repeat}, data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}, pack_a={str(pack_a).lower()}, pack_b={str(pack_b).lower()} ");
     
     #define M {M}
     #define N {N}
@@ -326,7 +328,8 @@ def generate_sme_range_test_cpp(
     data_type: str = "fp32",
     m_vl: int = 1,
     n_vl: int = 4,
-    pack_mode: str = "nopack",
+    pack_a: bool = False,
+    pack_b: bool = False,
 ):
     spec = KernelSpec.from_args(
         M_end,
@@ -341,13 +344,13 @@ def generate_sme_range_test_cpp(
         data_type,
         m_vl,
         n_vl,
-        pack_mode,
+        pack_a,
+        pack_b,
     )
     assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
 
     input_type, output_type, input_type_include, guard_name, tol_val = test_cpp_types(spec)
-    _, nopack_func_name, packed_func_name = build_symbol_names(spec, uniq_id)
-    entry_func_name = packed_func_name if spec.is_packed() else nopack_func_name
+    _, entry_func_name = build_symbol_names(spec, uniq_id)
 
     max_lda = M_end if spec.transA == "N" else K_end
     max_ldb = K_end if spec.transB == "N" else N_end
@@ -388,7 +391,7 @@ int main()
     (void)perf_flag;
     (void){repeat};
 
-    printf("M=%d:%d:%d, N=%d:%d:%d, K=%d:%d:%d, transA=%c, transB=%c, data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}, pack_mode={pack_mode}\\n",
+    printf("M=%d:%d:%d, N=%d:%d:%d, K=%d:%d:%d, transA=%c, transB=%c, data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}, pack_a={str(pack_a).lower()}, pack_b={str(pack_b).lower()}\\n",
         m_start, m_end, m_step, n_start, n_end, n_step, k_start, k_end, k_step, transA, transB);
 
     const int total_tests =
@@ -493,7 +496,8 @@ def generate_sme_driver_cpp(
     data_type: str = "fp32",
     m_vl: int = 1,
     n_vl: int = 4,
-    pack_mode: str = "nopack",
+    pack_a: bool = False,
+    pack_b: bool = False,
 ):
     spec = KernelSpec.from_args(
         M,
@@ -508,9 +512,9 @@ def generate_sme_driver_cpp(
         data_type,
         m_vl,
         n_vl,
-        pack_mode,
+        pack_a,
+        pack_b,
     )
     assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
-    kernel_func_name, nopack_func_name, packed_func_name = build_symbol_names(spec, uniq_id)
-    driver_func_name = packed_func_name if spec.is_packed() else nopack_func_name
+    kernel_func_name, driver_func_name = build_symbol_names(spec, uniq_id)
     return generate_gemm_driver(spec, kernel_func_name, driver_func_name)

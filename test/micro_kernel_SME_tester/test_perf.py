@@ -48,6 +48,16 @@ def run_command(cmd: str) -> str:
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Command execution failed: {e}") from e
 
+
+def pack_label(pack_a: bool, pack_b: bool, func_name: str) -> str:
+    if pack_a and pack_b:
+        return f"{func_name}_packab"
+    if pack_a:
+        return f"{func_name}_packa"
+    if pack_b:
+        return f"{func_name}_packb"
+    return "autogemm_nopacking"
+
 def generate_test_cases_by_trans() -> List[Dict]:
     trans_pairs = [("N", "N"), ("N", "T"), ("T", "N"), ("T", "T")]
     cases_by_trans = {f"{ta}{tb}": [] for ta, tb in trans_pairs}
@@ -110,21 +120,25 @@ def generate_test_cases_by_trans() -> List[Dict]:
 
     return final_cases
 
-def run_test_case_with_mode(case: Dict, m_vl: int, n_vl: int, data_type: str, pack_mode: str) -> float:
+def run_test_case(case: Dict, m_vl: int, n_vl: int, data_type: str, pack_a: bool, pack_b: bool) -> float:
     m, n, k = case["m"], case["n"], case["k"]
     ta, tb = case["transa"], case["transb"]
     lda = k if ta == "T" else m
     ldb = n if tb == "T" else k
     ldc = m
 
-    kernel_cmd = " ".join([
+    kernel_cmd_parts = [
         CONFIG["numactl"], CONFIG["taskset"], sys.executable, CONFIG["kernel_script"],
         f"--M {m}", f"--N {n}", f"--K {k}",
         f"--lda {lda}", f"--ldb {ldb}", f"--ldc {ldc}",
         f"--transA {ta}", f"--transB {tb}",
         f"--data_type {data_type}", f"--m_vl {m_vl}", f"--n_vl {n_vl}",
-        f"--pack-mode {pack_mode}",
-    ])
+    ]
+    if pack_a:
+        kernel_cmd_parts.append("--pack_a")
+    if pack_b:
+        kernel_cmd_parts.append("--pack_b")
+    kernel_cmd = " ".join(kernel_cmd_parts)
 
     try:
         kernel_output = run_command(kernel_cmd)
@@ -148,25 +162,12 @@ def run_blas_case(case: Dict, blas_binary: str) -> float:
     except Exception:
         return 0.0
 
-
-def get_pack_modes(pack_mode: str) -> List[str]:
-    if pack_mode == "both":
-        return ["nopack", "packed"]
-    return [pack_mode]
-
-
-def get_pack_label(pack_mode: str, func_name: str) -> str:
-    if pack_mode == "nopack":
-        return "autogemm_nopacking"
-    return f"{func_name}_packed"
-
-
-def run_evaluation(data_type: str, blas_binary: str, func_name: str, all_cases: List[Dict], pack_mode: str):
+def run_evaluation(data_type: str, blas_binary: str, func_name: str, all_cases: List[Dict], pack_a: bool, pack_b: bool):
     """
     Core evaluation loop. Runs all test cases for a specific data type (e.g., bf16, fp16).
     """
     total_cases = len(all_cases)
-    selected_pack_modes = get_pack_modes(pack_mode)
+    current_pack_label = pack_label(pack_a, pack_b, func_name)
     print("\n" + "=" * 100)
     print(f" >>> Starting Evaluation for {data_type.upper()} ({blas_binary}) <<<")
     print("=" * 100)
@@ -185,10 +186,8 @@ def run_evaluation(data_type: str, blas_binary: str, func_name: str, all_cases: 
             "type": case["type"],
             "Mflops_KPL_BLAS": 0.0,
         }
-        for active_pack_mode in selected_pack_modes:
-            pack_label = get_pack_label(active_pack_mode, func_name)
-            for tile_name, _, _ in CONFIG["kernel_shapes"]:
-                row[f"Mflops_{pack_label}_{tile_name}"] = 0.0
+        for tile_name, _, _ in CONFIG["kernel_shapes"]:
+            row[f"Mflops_{current_pack_label}_{tile_name}"] = 0.0
         results.append(row)
 
     # 1. Run BLAS once as baseline
@@ -199,20 +198,20 @@ def run_evaluation(data_type: str, blas_binary: str, func_name: str, all_cases: 
         results[i]["Mflops_KPL_BLAS"] = score
         print(f"{score:,.2f}")
 
-    # 2. Switch kernel shapes and fill results horizontally
-    for active_pack_mode in selected_pack_modes:
-        pack_label = get_pack_label(active_pack_mode, func_name)
+    print("\n" + "=" * 100)
+    print(f">>> Starting kernel mode: {current_pack_label} <<<")
+    for tile_name, m_vl, n_vl in CONFIG["kernel_shapes"]:
         print("\n" + "=" * 100)
-        print(f">>> Starting kernel mode: {pack_label} <<<")
-        for tile_name, m_vl, n_vl in CONFIG["kernel_shapes"]:
-            print("\n" + "=" * 100)
-            print(f">>> Starting tile test: {tile_name} (m_vl={m_vl}, n_vl={n_vl}, pack_mode={active_pack_mode}) <<<")
+        print(
+            f">>> Starting tile test: {tile_name} (m_vl={m_vl}, n_vl={n_vl}, "
+            f"pack_a={pack_a}, pack_b={pack_b}) <<<"
+        )
 
-            for i, case in enumerate(all_cases):
-                print(f"[{i+1}/{total_cases}] {tile_name:8}/{active_pack_mode:7}: {results[i]['Command']:60} ... ", end="", flush=True)
-                score = run_test_case_with_mode(case, m_vl, n_vl, data_type, active_pack_mode)
-                results[i][f"Mflops_{pack_label}_{tile_name}"] = score
-                print(f"{score:,.2f}")
+        for i, case in enumerate(all_cases):
+            print(f"[{i+1}/{total_cases}] {tile_name:8}/{current_pack_label:18}: {results[i]['Command']:60} ... ", end="", flush=True)
+            score = run_test_case(case, m_vl, n_vl, data_type, pack_a, pack_b)
+            results[i][f"Mflops_{current_pack_label}_{tile_name}"] = score
+            print(f"{score:,.2f}")
 
     # Data processing and export
     if results:
@@ -220,25 +219,21 @@ def run_evaluation(data_type: str, blas_binary: str, func_name: str, all_cases: 
 
         ordered_cols = ["Command", "Thread", "Function", "type"]
 
-        for active_pack_mode in selected_pack_modes:
-            pack_label = get_pack_label(active_pack_mode, func_name)
-            for tile_name, _, _ in CONFIG["kernel_shapes"]:
-                metric_col = f"Mflops_{pack_label}_{tile_name}"
-                improve_col = f"Improve_blas/{pack_label}_{tile_name}"
-                mask = df["Mflops_KPL_BLAS"] > 0
-                df.loc[mask, improve_col] = (
-                    (df.loc[mask, metric_col] / df.loc[mask, "Mflops_KPL_BLAS"]) - 1.0
-                ) * 100.0
-                df.loc[~mask, improve_col] = 0.0
-                df[improve_col] = df[improve_col].map(lambda x: f"{x:+.2f}%" if x != 0.0 else "N/A")
-                ordered_cols.append(metric_col)
+        for tile_name, _, _ in CONFIG["kernel_shapes"]:
+            metric_col = f"Mflops_{current_pack_label}_{tile_name}"
+            improve_col = f"Improve_blas/{current_pack_label}_{tile_name}"
+            mask = df["Mflops_KPL_BLAS"] > 0
+            df.loc[mask, improve_col] = (
+                (df.loc[mask, metric_col] / df.loc[mask, "Mflops_KPL_BLAS"]) - 1.0
+            ) * 100.0
+            df.loc[~mask, improve_col] = 0.0
+            df[improve_col] = df[improve_col].map(lambda x: f"{x:+.2f}%" if x != 0.0 else "N/A")
+            ordered_cols.append(metric_col)
 
         ordered_cols.append("Mflops_KPL_BLAS")
 
-        for active_pack_mode in selected_pack_modes:
-            pack_label = get_pack_label(active_pack_mode, func_name)
-            for tile_name, _, _ in CONFIG["kernel_shapes"]:
-                ordered_cols.append(f"Improve_blas/{pack_label}_{tile_name}")
+        for tile_name, _, _ in CONFIG["kernel_shapes"]:
+            ordered_cols.append(f"Improve_blas/{current_pack_label}_{tile_name}")
 
         export_df = df[ordered_cols].copy()
         timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
@@ -260,7 +255,8 @@ def run_evaluation(data_type: str, blas_binary: str, func_name: str, all_cases: 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pack-mode", type=str, default="nopack", choices=["nopack", "packed", "both"])
+    parser.add_argument("--pack_a", action="store_true")
+    parser.add_argument("--pack_b", action="store_true")
     args = parser.parse_args()
 
     print("=" * 100)
@@ -284,7 +280,8 @@ def main():
                 blas_binary=config["blas_binary"],
                 func_name=config["func_name"],
                 all_cases=all_cases,
-                pack_mode=args.pack_mode,
+                pack_a=args.pack_a,
+                pack_b=args.pack_b,
             )
 
     except KeyboardInterrupt:

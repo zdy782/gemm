@@ -6,6 +6,16 @@ import shutil
 import subprocess
 
 
+def pack_label(pack_a=False, pack_b=False):
+    if pack_a and pack_b:
+        return "packab"
+    if pack_a:
+        return "packa"
+    if pack_b:
+        return "packb"
+    return "nopack"
+
+
 def setup_environment():
     """Set up Python import paths."""
     current_path = os.path.dirname(os.path.abspath(__file__))
@@ -31,7 +41,8 @@ def run_single_test(
     data_type="fp32",
     m_vl=1,
     n_vl=4,
-    pack_mode="nopack",
+    pack_a=False,
+    pack_b=False,
     verbose=True,
     keep_tmp=False,
 ):
@@ -53,7 +64,7 @@ def run_single_test(
 
     try:
         asm_code = generate_sme_asm(
-            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, data_type, m_vl, n_vl, pack_mode
+            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, data_type, m_vl, n_vl, pack_a, pack_b
         )
         if not asm_code:
             if verbose:
@@ -64,7 +75,7 @@ def run_single_test(
             f.write(asm_code)
 
         cpp_code = generate_sme_test_cpp(
-            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, repeat, data_type, m_vl, n_vl, pack_mode
+            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, repeat, data_type, m_vl, n_vl, pack_a, pack_b
         )
         if not cpp_code:
             if verbose:
@@ -75,7 +86,7 @@ def run_single_test(
             f.write(cpp_code)
 
         driver_code = generate_sme_driver_cpp(
-            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, data_type, m_vl, n_vl, pack_mode
+            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, data_type, m_vl, n_vl, pack_a, pack_b
         )
         if not driver_code:
             if verbose:
@@ -196,7 +207,8 @@ def run_range_test(
     data_type="fp32",
     m_vl=1,
     n_vl=4,
-    pack_mode="nopack",
+    pack_a=False,
+    pack_b=False,
     verbose=True,
     keep_tmp=False,
 ):
@@ -227,7 +239,7 @@ def run_range_test(
     try:
         asm_code = generate_sme_asm(
             m_end, n_end, k_end, lda_gen, ldb_gen, ldc_gen,
-            gemm_type, transA, transB, uniq_id, data_type, m_vl, n_vl, pack_mode
+            gemm_type, transA, transB, uniq_id, data_type, m_vl, n_vl, pack_a, pack_b
         )
         if not asm_code:
             if verbose:
@@ -243,7 +255,7 @@ def run_range_test(
             k_start, k_end, k_step,
             lda_gen, ldb_gen, ldc_gen,
             gemm_type, transA, transB, uniq_id, repeat,
-            data_type, m_vl, n_vl, pack_mode
+            data_type, m_vl, n_vl, pack_a, pack_b
         )
         if not cpp_code:
             if verbose:
@@ -255,7 +267,7 @@ def run_range_test(
 
         driver_code = generate_sme_driver_cpp(
             m_end, n_end, k_end, lda_gen, ldb_gen, ldc_gen,
-            gemm_type, transA, transB, uniq_id, data_type, m_vl, n_vl, pack_mode
+            gemm_type, transA, transB, uniq_id, data_type, m_vl, n_vl, pack_a, pack_b
         )
         if not driver_code:
             if verbose:

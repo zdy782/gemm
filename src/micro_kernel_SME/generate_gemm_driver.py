@@ -33,6 +33,8 @@ def generate_gemm_driver(spec, kernel_func_name: str, driver_func_name: str) -> 
 
     a_workspace = GEMM_P * GEMM_Q
     b_workspace = GEMM_Q * GEMM_R
+    a_needs_pack = spec.pack_a
+    b_needs_pack = spec.pack_b
 
     if spec.transA == "N":
         a_pack_stmt = (
@@ -76,8 +78,8 @@ def generate_gemm_driver(spec, kernel_func_name: str, driver_func_name: str) -> 
             f"            ldb_kernel = ldb;\n"
         )
 
-    b_copy_code = b_pack_stmt if spec.is_packed() else b_direct_stmt
-    a_copy_code = a_pack_stmt if spec.is_packed() else a_direct_stmt
+    b_copy_code = b_pack_stmt if b_needs_pack else b_direct_stmt
+    a_copy_code = a_pack_stmt if a_needs_pack else a_direct_stmt
 
     code = f"""
 #include <arm_sve.h>
@@ -86,15 +88,23 @@ def generate_gemm_driver(spec, kernel_func_name: str, driver_func_name: str) -> 
 extern "C" int {kernel_func_name}(const long M, const long N, const long K, const {input_type} *A, const {input_type} *B, {output_type} *C, const long lda, const long ldb, const long ldc);
 """
 
-    if spec.is_packed():
+    if a_needs_pack:
         code += f"""
 alignas(64) static {input_type} A_pack[{a_workspace}];
+"""
+    if b_needs_pack:
+        code += f"""
 alignas(64) static {input_type} B_pack[{b_workspace}];
+"""
+    if a_needs_pack or b_needs_pack:
+        code += f"""
 static constexpr int AUTOGEMM_COPY_UNROLL_M = {spec.tile.m_vl};
 static constexpr int AUTOGEMM_COPY_UNROLL_N = {spec.tile.n_vl};
 """
+    if a_needs_pack:
         code += generate_gemm_ncopy(incopy_name, input_type, "IN")
         code += generate_gemm_tcopy(itcopy_name, input_type, "IT")
+    if b_needs_pack:
         code += generate_gemm_ncopy(oncopy_name, input_type, "ON")
         code += generate_gemm_tcopy(otcopy_name, input_type, "OT")
 
