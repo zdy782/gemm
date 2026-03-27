@@ -2,7 +2,7 @@ from copy import deepcopy
 
 from global_config import LDNT1, STNT1, get_element_size_shift, get_element_suffix, get_ld1, get_mopa_inst, tile_size_from_vl
 
-# This file converts a chosen `mvl x nvl` tile into the exact load, mopa, and pointer-update schedule that will be emitted.
+# This file converts a chosen `mvl x nvl` tile into the exact load, mopa, and pointer-update schedule that will be generated.
 
 
 def _resolve_load_inst(ctx, load_inst):
@@ -93,7 +93,7 @@ def _gen_mopa(ctx, op, regs_a, regs_b):
 
 
 def _gen_kernel(ctx, plan, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    # Walk the plan in order so every load, mopa, and pointer update is emitted exactly once into the tile body.
+    # Walk the plan in order so every load, mopa, and pointer update is generated exactly once into the tile body.
     load_inst = _resolve_load_inst(ctx, ldopt)
     lda_inst = _resolve_load_inst(ctx, ldaopt)
     regs_a = [a0, a1, a2, a3]
@@ -376,7 +376,7 @@ def _side_is_contiguous(ctx, side):
 
 
 def _gen_plan_code(ctx, key, last_k, plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaopt=None):
-    # Keep one wrapper so every runtime branch feeds through the same kernel emitter entrypoint.
+    # Keep one wrapper so every runtime branch feeds through the same kernel generator entrypoint.
     return _gen_kernel(ctx, plan, last_k, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 

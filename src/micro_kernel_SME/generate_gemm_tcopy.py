@@ -1,4 +1,4 @@
-def _tcopy_traits(input_type: str):
+def tcopy_traits(input_type: str):
     if input_type == "float":
         return {
             "svcnt": "svcntw()",
@@ -36,7 +36,7 @@ def generate_gemm_tcopy(cname: str, input_type: str, tcopy_type: str) -> str:
     if tcopy_type not in ("IT", "OT"):
         raise ValueError(f"Unsupported tcopy_type: {tcopy_type}")
 
-    traits = _tcopy_traits(input_type)
+    traits = tcopy_traits(input_type)
     unroll_name = "AUTOGEMM_COPY_UNROLL_M" if tcopy_type == "IT" else "AUTOGEMM_COPY_UNROLL_N"
 
     return f"""

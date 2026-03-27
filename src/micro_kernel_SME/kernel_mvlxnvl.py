@@ -21,7 +21,7 @@ from kernel_asm import (
     kernel_4VL_1VL_last_k,
 )
 
-# This layer bridges the loop nest and the tile emitter by mapping each logical `mvl x nvl` shape to its concrete kernel helper.
+# This layer bridges the loop nest and the tile generator by mapping each logical `mvl x nvl` shape to its concrete kernel helper.
 
 
 KERNEL_FUN_MAP = {
@@ -46,7 +46,7 @@ KERNEL_FUN_MAP_LAST_K = {
     ("1VL", "1VL"): kernel_1VL_1VL_last_k,
 }
 def resolve_kernel_variant(ctx, mvl, nvl, m_fullness, n_fullness, last_k=False):
-    # Collapse loop-selected fullness into one explicit kernel body variant so the tile emitter no longer re-dispatches on MIN_M/MIN_N.
+    # Collapse loop-selected fullness into one explicit kernel body variant so the tile generator no longer re-dispatches on MIN_M/MIN_N.
     if last_k or not (ctx.is_ext_precision() and ctx.use_ext_paired_fast_path()):
         return "safe"
 

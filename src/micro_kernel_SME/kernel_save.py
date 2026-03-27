@@ -197,7 +197,7 @@ def kernel_save_c_base_n_1VL(ctx, label, mvl, nvl, c0="za0", c1="za1", c2="za2",
 
 
 def _kernel_save_c_base_n_multi(ctx, label, mvl, full_groups, tail_group, tail_nvl):
-    # Save wider N groups by emitting their full `1VL` slices first and then delegating the last partial group to the tail helper.
+    # Save wider N groups by generating their full `1VL` slices first and then delegating the last partial group to the tail helper.
     regs = ctx.registers
     code_str = f""
     code_str += _gen_save_base_index_init(ctx)

@@ -7,7 +7,7 @@ GEMM_Q = 512
 GEMM_R = 1024
 
 
-def _precision_types(spec):
+def precision_types(spec):
     if spec.is_bf16():
         return "__bf16", "float", "#include <arm_bf16.h>\n"
     if spec.is_fp16():
@@ -15,7 +15,7 @@ def _precision_types(spec):
     return "float", "float", ""
 
 
-def _driver_kernel_call(kernel_func_name, a_ptr, b_ptr, c_ptr, lda_name, ldb_name, ldc_name):
+def gen_driver_kernel_call(kernel_func_name, a_ptr, b_ptr, c_ptr, lda_name, ldb_name, ldc_name):
     return (
         f"{kernel_func_name}(minI, minJ, minL, {a_ptr}, {b_ptr}, {c_ptr}, "
         f"{lda_name}, {ldb_name}, {ldc_name});"
@@ -23,7 +23,7 @@ def _driver_kernel_call(kernel_func_name, a_ptr, b_ptr, c_ptr, lda_name, ldb_nam
 
 
 def generate_gemm_driver(spec, kernel_func_name: str, driver_func_name: str) -> str:
-    input_type, output_type, input_include = _precision_types(spec)
+    input_type, output_type, input_include = precision_types(spec)
 
     prefix = spec.gemm_prefix()
     incopy_name = f"{prefix}_incopy"
@@ -123,7 +123,7 @@ extern "C" int {driver_func_name}(const long M, const long N, const long K, cons
                     minI = {GEMM_P};
                 }}
                 {a_copy_code}
-                {_driver_kernel_call(kernel_func_name, "sa", "sb", "C + is + js * ldc", "lda_kernel", "ldb_kernel", "ldc")}
+                {gen_driver_kernel_call(kernel_func_name, "sa", "sb", "C + is + js * ldc", "lda_kernel", "ldb_kernel", "ldc")}
                 is += minI;
             }}
             ls += minL;

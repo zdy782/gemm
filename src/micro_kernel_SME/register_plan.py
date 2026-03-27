@@ -202,6 +202,7 @@ class PredicateRegisters:
     ext_m_tail: str = "p5"
     ext_n_main: str = "p6"
     ext_n_tail: str = "p7"
+    load_pair_tmp: str = "p14"
     false_all: str = "p15"
 
 

@@ -6,7 +6,7 @@ from model_spec import GenerationContext, KernelSpec
 from register_plan import DEFAULT_REGISTER_PLAN
 
 
-def _build_symbol_names(spec: KernelSpec, uniq_id: str):
+def build_symbol_names(spec: KernelSpec, uniq_id: str):
     trans_suffix = f"{spec.transA.lower()}{spec.transB.lower()}"
     tile_suffix = f"{spec.tile.m_vl}x{spec.tile.n_vl}"
     suffix = f"{trans_suffix}_{tile_suffix}_{uniq_id}"
@@ -18,7 +18,7 @@ def _build_symbol_names(spec: KernelSpec, uniq_id: str):
     )
 
 
-def _test_cpp_types(spec: KernelSpec):
+def test_cpp_types(spec: KernelSpec):
     if spec.is_bf16():
         return "__bf16", "float", "#include <arm_bf16.h>", "__BGEMM_KERNEL_H", get_tolerance_value(spec)
     if spec.is_fp16():
@@ -26,7 +26,7 @@ def _test_cpp_types(spec: KernelSpec):
     return "float", "float", "", "__SGEMM_KERNEL_H", get_tolerance_value(spec)
 
 
-def _test_cpp_prelude(guard_name: str, input_type_include: str) -> str:
+def test_cpp_prelude(guard_name: str, input_type_include: str) -> str:
     return f"""
 #ifndef {guard_name}
 #define {guard_name}
@@ -83,7 +83,7 @@ def generate_sme_asm(
     # The generator pipeline is:
     # 1. normalize CLI-like inputs into an immutable spec
     # 2. resolve the transpose-specific load model
-    # 3. hand the context to `laf_asm_code`, which emits the loop nest and
+    # 3. hand the context to `laf_asm_code`, which generates the loop nest and
     #    per-tile kernels
     spec = KernelSpec.from_args(
         M,
@@ -101,7 +101,7 @@ def generate_sme_asm(
         pack_mode,
     )
     assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
-    func_name, _, _ = _build_symbol_names(spec, uniq_id)
+    func_name, _, _ = build_symbol_names(spec, uniq_id)
     kernel_spec = spec.kernel_view_spec()
     ctx = GenerationContext(
         spec=kernel_spec,
@@ -171,7 +171,7 @@ def generate_sme_test_cpp(
     )
     assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
 
-    input_type, output_type, input_type_include, guard_name, tol_val = _test_cpp_types(spec)
+    input_type, output_type, input_type_include, guard_name, tol_val = test_cpp_types(spec)
 
     # Column-major storage matrix sizes:
     # - A (transA='N'): M×K, needs K columns × lda = K * lda elements
@@ -186,10 +186,10 @@ def generate_sme_test_cpp(
     b_size = b_cols * ldb
     c_size = N * ldc
 
-    kernel_func_name, nopack_func_name, packed_func_name = _build_symbol_names(spec, uniq_id)
+    kernel_func_name, nopack_func_name, packed_func_name = build_symbol_names(spec, uniq_id)
     entry_func_name = packed_func_name if spec.is_packed() else nopack_func_name
 
-    cc_code = _test_cpp_prelude(guard_name, input_type_include)
+    cc_code = test_cpp_prelude(guard_name, input_type_include)
 
     # extern declaration
     cc_code += f"""
@@ -345,8 +345,8 @@ def generate_sme_range_test_cpp(
     )
     assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
 
-    input_type, output_type, input_type_include, guard_name, tol_val = _test_cpp_types(spec)
-    _, nopack_func_name, packed_func_name = _build_symbol_names(spec, uniq_id)
+    input_type, output_type, input_type_include, guard_name, tol_val = test_cpp_types(spec)
+    _, nopack_func_name, packed_func_name = build_symbol_names(spec, uniq_id)
     entry_func_name = packed_func_name if spec.is_packed() else nopack_func_name
 
     max_lda = M_end if spec.transA == "N" else K_end
@@ -356,7 +356,7 @@ def generate_sme_range_test_cpp(
     max_b_size = (N_end if spec.transB == "N" else K_end) * max_ldb
     max_c_size = N_end * max_ldc
 
-    cc_code = _test_cpp_prelude(guard_name, input_type_include)
+    cc_code = test_cpp_prelude(guard_name, input_type_include)
     cc_code += f"""
 extern "C" int {entry_func_name}(const long M, const long N, const long K, const {input_type} *A, const {input_type} *B, {output_type} *C, const long lda, const long ldb, const long ldc);
 
@@ -511,6 +511,6 @@ def generate_sme_driver_cpp(
         pack_mode,
     )
     assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
-    kernel_func_name, nopack_func_name, packed_func_name = _build_symbol_names(spec, uniq_id)
+    kernel_func_name, nopack_func_name, packed_func_name = build_symbol_names(spec, uniq_id)
     driver_func_name = packed_func_name if spec.is_packed() else nopack_func_name
     return generate_gemm_driver(spec, kernel_func_name, driver_func_name)

@@ -25,23 +25,15 @@ def _load_predicate(ctx, role):
     return pred if ctx.is_ext_precision() else f"{pred}/z"
 
 
-def _zip_ext_predicate(ctx, role):
-    # Build the duplicated `.h` predicate that lets one logical lane feed ext zip-based shaping.
-    pred = _pred(ctx, role)
-    ext_pred = _ext_pred(ctx, role)
-    return f"zip1      {ext_pred}.h, {pred}.h, {pred}.h\n"
-
-
-def _paired_ext_predicate(ctx, first_role, second_role=None, load_second_role=None):
-    # Build the load predicate from one role pair, then rebuild the logical ext predicates that later mopa ops expect.
+def _paired_ext_load_predicate(ctx, first_role, second_role=None, load_second_role=None):
+    # Full paired paths reuse the prebuilt widened predicates. Only mixed pairs need a dedicated temporary load predicate.
     second_role = first_role if second_role is None else second_role
     load_second_role = second_role if load_second_role is None else load_second_role
-    target = _ext_pred(ctx, load_second_role)
-    pre_load = f"zip1      {target}.h, {_pred(ctx, first_role)}.h, {_pred(ctx, load_second_role)}.h\n"
-    post_load = _zip_ext_predicate(ctx, first_role)
-    if second_role is not None:
-        post_load += _zip_ext_predicate(ctx, second_role)
-    return pre_load, target, post_load
+    if first_role == load_second_role:
+        return "", _ext_pred(ctx, first_role)
+    target = ctx.registers.predicates.load_pair_tmp
+    code_str = f"zip1      {target}.h, {_pred(ctx, first_role)}.h, {_pred(ctx, load_second_role)}.h\n"
+    return code_str, target
 
 
 def _rdvl_lane_offset(registers, lane):
@@ -83,10 +75,9 @@ def _gen_zip_pair(dst0, dst1, low_tmp, high_tmp):
 
 
 def _gen_ext_contiguous_head(ctx, base, stride, tmp_base, role, dst, low_tmp, high_tmp):
-    # Materialize the first contiguous ext lane as one logical operand with a plain `zip1`.
+    # Materialize the first contiguous ext lane as one logical operand with a plain `zip1`, reusing the prebuilt widened predicates.
     pred = _pred(ctx, role)
     code_str = f""
-    code_str += _zip_ext_predicate(ctx, role)
     code_str += f"ld1h      {low_tmp}.h, {pred}/z, [{base}]\n"
     code_str += f"add       {tmp_base}, {base}, {stride}, LSL #1\n"
     code_str += f"ld1h      {high_tmp}.h, {pred}/z, [{tmp_base}]\n"
@@ -99,12 +90,11 @@ def _gen_ext_contiguous_head_pair_fast(
 ):
     # Materialize the first contiguous `2VL` chunk as two operands with one load pair plus `zip1+zip2`.
     code_str = f""
-    pred_pre, pred, pred_post = _paired_ext_predicate(ctx, role0, role1, load_second_role=load_role1)
+    pred_pre, pred = _paired_ext_load_predicate(ctx, role0, role1, load_second_role=load_role1)
     code_str += pred_pre
     code_str += f"ld1h      {low_tmp}.h, {pred}/z, [{base}]\n"
     code_str += f"add       {tmp_base}, {base}, {stride}, LSL #1\n"
     code_str += f"ld1h      {high_tmp}.h, {pred}/z, [{tmp_base}]\n"
-    code_str += pred_post
     code_str += _gen_zip_pair(dst0, dst1, low_tmp, high_tmp)
     return code_str
 
@@ -112,19 +102,19 @@ def _gen_ext_contiguous_head_pair_fast(
 def _gen_ext_contiguous_lane_fast_pair(
     ctx, base, paired_base, role, dst, lane, low_tmp, high_tmp, next_dst=None, next_role=None, next_load_role=None
 ):
-    # Load one later contiguous `2VL` chunk and shape it with `zip1+zip2`, even when the second logical lane is only partially full.
+    # Load one later contiguous `2VL` chunk and shape it with `zip1+zip2`, reusing the hoisted lane-2 offset for the full hot path.
     code_str = f""
-    pred_pre, pred, pred_post = _paired_ext_predicate(
+    pred_pre, pred = _paired_ext_load_predicate(
         ctx,
         role,
         next_role if next_dst is not None else None,
         load_second_role=next_load_role if next_dst is not None else None,
     )
     code_str += pred_pre
-    code_str += _rdvl_lane_offset(ctx.registers, lane)
+    if lane != 2:
+        code_str += _rdvl_lane_offset(ctx.registers, lane)
     code_str += f"ld1h      {low_tmp}.h, {pred}/z, [{base}, {ctx.registers.address.TMP_PTR2}, LSL #1]\n"
     code_str += f"ld1h      {high_tmp}.h, {pred}/z, [{paired_base}, {ctx.registers.address.TMP_PTR2}, LSL #1]\n"
-    code_str += pred_post
     code_str += _gen_zip_pair(dst, next_dst, low_tmp, high_tmp)
     return code_str
 
@@ -136,7 +126,6 @@ def _gen_ext_contiguous_lane(
     if next_dst is None:
         pred = _pred(ctx, role)
         code_str = f""
-        code_str += _zip_ext_predicate(ctx, role)
         code_str += _rdvl_lane_offset(ctx.registers, lane)
         code_str += f"ld1h      {low_tmp}.h, {pred}/z, [{base}, {ctx.registers.address.TMP_PTR2}, LSL #1]\n"
         code_str += f"ld1h      {high_tmp}.h, {pred}/z, [{paired_base}, {ctx.registers.address.TMP_PTR2}, LSL #1]\n"
@@ -160,14 +149,13 @@ def _gen_ext_contiguous_lane(
 def _gen_ext_contiguous_last_k_fast_pair(ctx, base, role, dst, lane, low_tmp, zero_tmp, next_dst=None, next_role=None):
     # The last-k fast path still pairs only one real load because the missing half is synthesized from zero.
     code_str = f""
-    pred_pre, pred, pred_post = _paired_ext_predicate(ctx, role, next_role if next_dst is not None else None)
+    pred_pre, pred = _paired_ext_load_predicate(ctx, role, next_role if next_dst is not None else None)
     code_str += pred_pre
     if lane > 0:
         code_str += _rdvl_lane_offset(ctx.registers, lane)
         code_str += f"ld1h      {low_tmp}.h, {pred}/z, [{base}, {ctx.registers.address.TMP_PTR2}, LSL #1]\n"
     else:
         code_str += f"ld1h      {low_tmp}.h, {pred}/z, [{base}]\n"
-    code_str += pred_post
     code_str += f"mov       {zero_tmp}.h, #0\n"
     code_str += f"zip1      {dst}.h, {low_tmp}.h, {zero_tmp}.h\n"
     if next_dst is not None:
@@ -176,7 +164,7 @@ def _gen_ext_contiguous_last_k_fast_pair(ctx, base, role, dst, lane, low_tmp, ze
 
 
 def _gen_ext_contiguous_last_k_pair_safe(ctx, base, role0, role1, dst0, dst1, lane, low_tmp, zero_tmp):
-    # Last-k mixed pairs are emitted as two safe scalar loads to avoid partial-lane pairing mistakes.
+    # Last-k mixed pairs are generated as two safe scalar loads to avoid partial-lane pairing mistakes.
     code_str = _gen_ext_contiguous_last_k(ctx, base, role0, dst0, lane, low_tmp, zero_tmp)
     code_str += _gen_ext_contiguous_last_k(ctx, base, role1, dst1, lane + 1, low_tmp, zero_tmp)
     return code_str
@@ -187,7 +175,6 @@ def _gen_ext_contiguous_last_k(ctx, base, role, dst, lane, low_tmp, zero_tmp, ne
     if next_dst is None:
         pred = _pred(ctx, role)
         code_str = f""
-        code_str += _zip_ext_predicate(ctx, role)
         if lane > 0:
             code_str += _rdvl_lane_offset(ctx.registers, lane)
             code_str += f"ld1h      {low_tmp}.h, {pred}/z, [{base}, {ctx.registers.address.TMP_PTR2}, LSL #1]\n"
@@ -218,7 +205,6 @@ def _gen_ext_gather_pair(ctx, base, role, index_vec, dst, low_tmp, high_tmp, pai
     # Gather paths keep their older zip/uzp shaping, but they are no longer part of the small paired fast policy.
     if next_dst is None:
         code_str = f""
-        code_str += _zip_ext_predicate(ctx, role)
         code_str += f"ld1h      {low_tmp}.s, {_ext_pred(ctx, role)}/z, [{base}, {index_vec}.s, UXTW]\n"
         code_str += f"add       {pair_base}, {base}, #2\n"
         code_str += f"ld1h      {high_tmp}.s, {_ext_pred(ctx, role)}/z, [{pair_base}, {index_vec}.s, UXTW]\n"
@@ -227,12 +213,11 @@ def _gen_ext_gather_pair(ctx, base, role, index_vec, dst, low_tmp, high_tmp, pai
         code_str += f"zip1      {dst}.h, {low_tmp}.h, {high_tmp}.h\n"
         return code_str
     code_str = f""
-    pred_pre, pred, pred_post = _paired_ext_predicate(ctx, role, next_role if next_dst is not None else None)
+    pred_pre, pred = _paired_ext_load_predicate(ctx, role, next_role if next_dst is not None else None)
     code_str += pred_pre
     code_str += f"ld1h      {low_tmp}.s, {pred}/z, [{base}, {index_vec}.s, UXTW]\n"
     code_str += f"add       {pair_base}, {base}, #2\n"
     code_str += f"ld1h      {high_tmp}.s, {pred}/z, [{pair_base}, {index_vec}.s, UXTW]\n"
-    code_str += pred_post
     if next_dst is not None:
         code_str += f"uzp1      {low_tmp}.h, {low_tmp}.h, {low_tmp}.h\n"
         code_str += f"uzp1      {high_tmp}.h, {high_tmp}.h, {high_tmp}.h\n"
@@ -252,15 +237,11 @@ def _gen_ext_gather_pair(ctx, base, role, index_vec, dst, low_tmp, high_tmp, pai
 def _gen_ext_gather_last_k(ctx, base, role, index_vec, dst, low_tmp, zero_tmp, next_dst=None, next_role=None):
     # Gather last-k is the conservative zero-extended version of the gather loader above.
     if next_dst is None:
-        return (
-            _zip_ext_predicate(ctx, role)
-            + f"ld1h      {dst}.s, {_ext_pred(ctx, role)}/z, [{base}, {index_vec}.s, UXTW]\n"
-        )
+        return f"ld1h      {dst}.s, {_ext_pred(ctx, role)}/z, [{base}, {index_vec}.s, UXTW]\n"
     code_str = f""
-    pred_pre, pred, pred_post = _paired_ext_predicate(ctx, role, next_role if next_dst is not None else None)
+    pred_pre, pred = _paired_ext_load_predicate(ctx, role, next_role if next_dst is not None else None)
     code_str += pred_pre
     code_str += f"ld1h      {low_tmp}.s, {pred}/z, [{base}, {index_vec}.s, UXTW]\n"
-    code_str += pred_post
     code_str += f"mov       {zero_tmp}.h, #0\n"
     if next_dst is not None:
         code_str += f"uzp1      {low_tmp}.h, {low_tmp}.h, {low_tmp}.h\n"
@@ -726,13 +707,13 @@ class GeneralGemmModel:
         regs = ctx.registers
         if ctx.is_ext_precision():
             code_str = f""
-            a_pred_pre, a_pred, a_pred_post = _paired_ext_predicate(
+            a_pred_pre, a_pred = _paired_ext_load_predicate(
                 ctx,
                 a_role,
                 a1_role if ctx.use_ext_paired_fast_path() and a1 is not None else None,
                 load_second_role=a1_load_role if ctx.use_ext_paired_fast_path() and a1 is not None else None,
             )
-            b_pred_pre, b_pred, b_pred_post = _paired_ext_predicate(
+            b_pred_pre, b_pred = _paired_ext_load_predicate(
                 ctx,
                 b_role,
                 b1_role if ctx.use_ext_paired_fast_path() and b1 is not None else None,
@@ -741,14 +722,12 @@ class GeneralGemmModel:
             code_str += a_pred_pre
             code_str += f"ld1h      {regs.vectors.a_low}.h, {a_pred}/z, [{regs.pointers.pA0}]\n"
             code_str += f"ld1h      {regs.vectors.pair_high}.h, {a_pred}/z, [{regs.pointers.pA0}, #1, MUL VL]\n"
-            code_str += a_pred_post
             code_str += f"zip1      {a0}.h, {regs.vectors.a_low}.h, {regs.vectors.pair_high}.h\n"
             if ctx.use_ext_paired_fast_path() and a1 is not None:
                 code_str += f"zip2      {a1}.h, {regs.vectors.a_low}.h, {regs.vectors.pair_high}.h\n"
             code_str += b_pred_pre
             code_str += f"ld1h      {self._b_low(ctx)}.h, {b_pred}/z, [{regs.pointers.pB0}]\n"
             code_str += f"ld1h      {self._b_high(ctx)}.h, {b_pred}/z, [{regs.pointers.pB0}, #1, MUL VL]\n"
-            code_str += b_pred_post
             code_str += f"zip1      {b0}.h, {self._b_low(ctx)}.h, {self._b_high(ctx)}.h\n"
             if ctx.use_ext_paired_fast_path() and b1 is not None:
                 code_str += f"zip2      {b1}.h, {self._b_low(ctx)}.h, {self._b_high(ctx)}.h\n"
@@ -771,7 +750,7 @@ class GeneralGemmModel:
             low_offset = lane * 2
             high_offset = low_offset + 1
             code_str = f""
-            pred_pre, pred, pred_post = _paired_ext_predicate(
+            pred_pre, pred = _paired_ext_load_predicate(
                 ctx,
                 role,
                 next_role if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
@@ -780,7 +759,6 @@ class GeneralGemmModel:
             code_str += pred_pre
             code_str += f"ld1h     {regs.vectors.a_low}.h, {pred}/z, [{regs.pointers.pA0}, #{low_offset}, MUL VL]\n"
             code_str += f"ld1h     {regs.vectors.pair_high}.h, {pred}/z, [{regs.pointers.pA0}, #{high_offset}, MUL VL]\n"
-            code_str += pred_post
             code_str += f"zip1     {dst}.h, {regs.vectors.a_low}.h, {regs.vectors.pair_high}.h\n"
             if ctx.use_ext_paired_fast_path() and next_dst is not None:
                 code_str += f"zip2     {next_dst}.h, {regs.vectors.a_low}.h, {regs.vectors.pair_high}.h\n"
@@ -794,7 +772,7 @@ class GeneralGemmModel:
             low_offset = lane * 2
             high_offset = low_offset + 1
             code_str = f""
-            pred_pre, pred, pred_post = _paired_ext_predicate(
+            pred_pre, pred = _paired_ext_load_predicate(
                 ctx,
                 role,
                 next_role if ctx.use_ext_paired_fast_path() and next_dst is not None else None,
@@ -803,7 +781,6 @@ class GeneralGemmModel:
             code_str += pred_pre
             code_str += f"ld1h      {self._b_low(ctx)}.h, {pred}/z, [{regs.pointers.pB0}, #{low_offset}, MUL VL]\n"
             code_str += f"ld1h      {self._b_high(ctx)}.h, {pred}/z, [{regs.pointers.pB0}, #{high_offset}, MUL VL]\n"
-            code_str += pred_post
             code_str += f"zip1      {dst}.h, {self._b_low(ctx)}.h, {self._b_high(ctx)}.h\n"
             if ctx.use_ext_paired_fast_path() and next_dst is not None:
                 code_str += f"zip2      {next_dst}.h, {self._b_low(ctx)}.h, {self._b_high(ctx)}.h\n"

@@ -1,4 +1,4 @@
-def _ncopy_traits(input_type: str):
+def ncopy_traits(input_type: str):
     if input_type == "float":
         return {
             "svcnt": "svcntw()",
@@ -45,7 +45,7 @@ def generate_gemm_ncopy(cname: str, input_type: str, ncopy_type: str) -> str:
     if ncopy_type not in ("IN", "ON"):
         raise ValueError(f"Unsupported ncopy_type: {ncopy_type}")
 
-    traits = _ncopy_traits(input_type)
+    traits = ncopy_traits(input_type)
     unroll_name = "AUTOGEMM_COPY_UNROLL_M" if ncopy_type == "IN" else "AUTOGEMM_COPY_UNROLL_N"
 
     if traits["scalar_fallback"]:

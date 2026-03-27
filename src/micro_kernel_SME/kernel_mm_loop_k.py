@@ -33,6 +33,30 @@ def _get_kernel_save_fn(mvl, nvl):
     return KERNEL_SAVE_FUN_MAP[(mvl, nvl)]
 
 
+def gen_ext_load_predicate_refresh(ctx):
+    # Build the widened ext predicates once per active M tile so full paired load helpers can reuse them across the whole K loop.
+    if not ctx.is_ext_precision():
+        return ""
+    regs = ctx.registers
+    code_str = f"zip1      {regs.ext_predicate('m_main')}.h, {regs.predicates.m_main}.h, {regs.predicates.m_main}.h\n"
+    code_str += f"zip1      {regs.ext_predicate('m_tail')}.h, {regs.predicates.m_tail}.h, {regs.predicates.m_tail}.h\n"
+    code_str += f"zip1      {regs.ext_predicate('n_main')}.h, {regs.predicates.n_main}.h, {regs.predicates.n_main}.h\n"
+    code_str += f"zip1      {regs.ext_predicate('n_tail')}.h, {regs.predicates.n_tail}.h, {regs.predicates.n_tail}.h\n"
+    return code_str
+
+
+def _gen_ext_hotpath_setup(ctx, mvl, nvl, kernel_variant):
+    # The second contiguous `2VL` chunk always starts one full VL past the head pair, so precompute that offset once outside the K hot loop.
+    if not ctx.is_ext_precision() or kernel_variant != "full":
+        return ""
+    if (mvl, nvl) not in {("1VL", "4VL"), ("4VL", "1VL")}:
+        return ""
+    regs = ctx.registers
+    code_str = f"rdvl      {regs.address.TMP_PTR2}, #1\n"
+    code_str += f"lsr       {regs.address.TMP_PTR2}, {regs.address.TMP_PTR2}, #1\n"
+    return code_str
+
+
 def _gen_ext_save_predicate_refresh(ctx):
     # Refresh the widened M-side save predicates right before save so exact-full paired paths do not depend on stale load-side p4/p5 state.
     if not ctx.is_ext_precision():
@@ -85,6 +109,7 @@ def kernel_mm_loop_k(ctx, label, mvl, nvl, m_fullness="single", n_fullness="sing
         exit_label = label
     kernel_variant = resolve_kernel_variant(ctx, mvl, nvl, m_fullness, n_fullness)
     code_str = f""
+    code_str += _gen_ext_hotpath_setup(ctx, mvl, nvl, kernel_variant)
     # `wbk` counts the full K blocks handled by the fixed kernel body. The
     # remainder path below only runs when `origK` leaves a partial block.
     code_str += f"lsr      {regs.counters.wbk}, {regs.dims.origK}, #{get_k_loop_shift(ctx)}\n"
