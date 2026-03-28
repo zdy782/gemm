@@ -428,6 +428,8 @@ int main()
         ((m_end - m_start) / m_step + 1) *
         ((n_end - n_start) / n_step + 1) *
         ((k_end - k_start) / k_step + 1);
+    const int progress_stride =
+        emit_progress_markers ? ((total_tests <= 100) ? 1 : ((total_tests + 99) / 100)) : total_tests;
 
     if (!emit_progress_markers) {{
         printf("---------------------------------------------------------------------------------------\\n");
@@ -544,7 +546,7 @@ int main()
                 }}
 
                 ++completed_tests;
-                if (emit_progress_markers && ((completed_tests & 255) == 0 || completed_tests == total_tests)) {{
+                if (emit_progress_markers && ((completed_tests % progress_stride) == 0 || completed_tests == total_tests)) {{
                     printf("__AUTOGEMM_PROGRESS__ %d %d\\n", completed_tests, total_tests);
                     fflush(stdout);
                 }}
