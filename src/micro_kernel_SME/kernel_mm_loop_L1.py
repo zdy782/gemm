@@ -1,4 +1,4 @@
-from global_config import get_predicate_suffix, get_whilelt_increment, tile_size_from_vl
+from global_config import get_element_suffix, get_whilelt_increment, tile_size_from_vl
 from kernel_mm_loop_L2 import kernel_mm_loop_L2
 
 # L1 is the outer N loop that measures the remaining columns, chooses the widest legal `nvl`, and hands that chunk to L2.
@@ -47,7 +47,7 @@ def _gen_n_loop_block(ctx, multiplier, m_size):
     regs = ctx.registers
     next_label = f".loops_of_l1_{multiplier - 1}vl" if multiplier > 2 else ".loops_of_l1_1vl"
     threshold = tile_size_from_vl(multiplier - 1)
-    pred_suffix = get_predicate_suffix(ctx)
+    pred_suffix = get_element_suffix(ctx)
     vl1 = tile_size_from_vl(1)
     code_str = f""
     code_str += f".loops_of_l1_{multiplier}vl:\n"
@@ -125,7 +125,7 @@ def kernel_mm_loop_n(ctx, n_size=None, m_size=None):
 
     code_str += f".loops_of_l1_1vl:\n"
     code_str += f"sub     {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}\n"
-    code_str += f"whilelt     {regs.predicates.n_main}{get_predicate_suffix(ctx)}, {regs.counters.TMP_CNT}, {regs.dims.MIN_N}\n"
+    code_str += f"whilelt     {regs.predicates.n_main}{get_element_suffix(ctx)}, {regs.counters.TMP_CNT}, {regs.dims.MIN_N}\n"
     code_str += f"add     {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, #{get_whilelt_increment(ctx)}\n"
     code_str += _gen_n_fullness_dispatch(ctx, 1, m_size, "k_loop_m_1vl")
     code_str += f".end_of_loops_m:\n"

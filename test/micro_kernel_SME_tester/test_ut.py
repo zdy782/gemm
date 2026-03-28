@@ -1,6 +1,7 @@
 import os
 import csv
 import argparse
+import sys
 
 from test_runner import pack_label, run_range_test, run_single_test, setup_environment
 
@@ -9,14 +10,43 @@ current_path = os.path.dirname(os.path.abspath(__file__))
 setup_environment()
 
 
+def _range_count(spec: str):
+    parts = str(spec).strip().split(":")
+    if len(parts) == 1:
+        start = end = int(parts[0])
+        step = 1
+    elif len(parts) == 2:
+        start = int(parts[0])
+        end = int(parts[1])
+        step = 1
+    elif len(parts) == 3:
+        start = int(parts[0])
+        end = int(parts[1])
+        step = int(parts[2])
+    else:
+        raise ValueError(f"invalid range spec: {spec}")
+    return ((end - start) // step) + 1
+
+
+def _expanded_points(tc):
+    m_spec = str(tc.get("M", "0"))
+    n_spec = str(tc.get("N", "0"))
+    k_spec = str(tc.get("K", "0"))
+    if not any(":" in value for value in (m_spec, n_spec, k_spec)):
+        return 1
+    return _range_count(m_spec) * _range_count(n_spec) * _range_count(k_spec)
+
+
 def _run_mode(testcases, pack_a: bool, pack_b: bool):
     total = len(testcases)
     passed = 0
     failed = 0
     failed_cases = []
     current_pack = pack_label(pack_a, pack_b)
+    expanded_total = sum(_expanded_points(tc) for tc in testcases)
 
     print(f"\n[INFO] Start running {total} test cases with pack={current_pack}...")
+    print(f"[INFO] Expanded inner tests for pack={current_pack}: {expanded_total}")
     print("=" * 80)
 
     for idx, tc in enumerate(testcases, 1):
@@ -43,6 +73,8 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
                 f"  gemm_type={gemm_type}, transA={transA}, transB={transB}, "
                 f"data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}"
             )
+            if is_range_case:
+                print(f"  expanded_inner_tests={_expanded_points(tc)}")
 
             if is_range_case:
                 ok = run_range_test(
@@ -150,10 +182,22 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
     }
 
 
+def _pack_modes(all_packs: bool, pack_a: bool, pack_b: bool):
+    if all_packs:
+        return [
+            (False, False),
+            (True, False),
+            (False, True),
+            (True, True),
+        ]
+    return [(pack_a, pack_b)]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pack_a", action="store_true")
     parser.add_argument("--pack_b", action="store_true")
+    parser.add_argument("--all_packs", action="store_true")
     parser.add_argument("--testcases", type=str, default=None)
     args = parser.parse_args()
 
@@ -177,7 +221,7 @@ def main():
             print("\n[PASS] Default test case passed")
         else:
             print("\n[FAIL] Default test case failed")
-        return
+        sys.exit(0 if ok else 1)
 
     with open(testcases_path, "r") as f:
         reader = csv.DictReader(f)
@@ -188,7 +232,20 @@ def main():
             )
         testcases = list(reader)
 
-    _run_mode(testcases, args.pack_a, args.pack_b)
+    mode_results = []
+    for pack_a, pack_b in _pack_modes(args.all_packs, args.pack_a, args.pack_b):
+        mode_results.append(_run_mode(testcases, pack_a, pack_b))
+
+    total = sum(mode["total"] for mode in mode_results)
+    passed = sum(mode["passed"] for mode in mode_results)
+    failed = sum(mode["failed"] for mode in mode_results)
+
+    if len(mode_results) > 1:
+        print("\n" + "=" * 80)
+        print(f"[OVERALL SUMMARY] modes={len(mode_results)}, Total: {total}, Passed: {passed}, Failed: {failed}")
+        print("=" * 80)
+
+    sys.exit(0 if failed == 0 else 1)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from global_config import get_element_size_shift, get_ld_element_suffix
+from global_config import get_element_size_shift, get_element_suffix
 
 # This file turns logical A/B lanes into concrete load-and-shape assembly for the chosen small/general model.
 
@@ -194,7 +194,7 @@ def _gen_ext_contiguous_last_k(ctx, base, role, dst, lane, low_tmp, zero_tmp, ne
 
 def _gen_non_ext_contiguous(load_inst, ctx, base, role, dst, lane):
     # FP32 contiguous loads are already naturally aligned, so they never need the ext zip shaping machinery.
-    suffix = get_ld_element_suffix(ctx)
+    suffix = get_element_suffix(ctx)
     pred = _load_predicate(ctx, role)
     if lane == 0:
         return f"{load_inst}      {dst}{suffix}, {pred}, [{base}]\n"
@@ -257,7 +257,7 @@ def _gen_ext_gather_last_k(ctx, base, role, index_vec, dst, low_tmp, zero_tmp, n
 
 def _gen_non_ext_gather(load_inst, ctx, base, role, index_vec, dst):
     # FP32 gather paths stay as direct vector gathers with no extra shaping.
-    suffix = get_ld_element_suffix(ctx)
+    suffix = get_element_suffix(ctx)
     pred = _load_predicate(ctx, role)
     return f"{load_inst}      {dst}{suffix}, {pred}, [{base}, {index_vec}.s, UXTW]\n"
 
@@ -733,8 +733,8 @@ class GeneralGemmModel:
                 code_str += f"zip2      {b1}.h, {self._b_low(ctx)}.h, {self._b_high(ctx)}.h\n"
             return code_str
         return (
-            f"{ldopt}      {b0}{get_ld_element_suffix(ctx)}, {_load_predicate(ctx, b_role)}, [{regs.pointers.pB0}]\n"
-            f"{ldaopt}     {a0}{get_ld_element_suffix(ctx)}, {_load_predicate(ctx, a_role)}, [{regs.pointers.pA0}]\n"
+            f"{ldopt}      {b0}{get_element_suffix(ctx)}, {_load_predicate(ctx, b_role)}, [{regs.pointers.pB0}]\n"
+            f"{ldaopt}     {a0}{get_element_suffix(ctx)}, {_load_predicate(ctx, a_role)}, [{regs.pointers.pA0}]\n"
         )
 
     def _b_low(self, ctx):
@@ -763,7 +763,7 @@ class GeneralGemmModel:
             if ctx.use_ext_paired_fast_path() and next_dst is not None:
                 code_str += f"zip2     {next_dst}.h, {regs.vectors.a_low}.h, {regs.vectors.pair_high}.h\n"
             return code_str
-        return f"{ldaopt}     {dst}{get_ld_element_suffix(ctx)}, {_load_predicate(ctx, role)}, [{regs.pointers.pA0}, #{lane}, MUL VL]\n"
+        return f"{ldaopt}     {dst}{get_element_suffix(ctx)}, {_load_predicate(ctx, role)}, [{regs.pointers.pA0}, #{lane}, MUL VL]\n"
 
     def _gen_general_b(self, ctx, dst, role, lane, ldopt, next_dst=None, next_role=None, next_load_role=None):
         # General B loads mirror general A and keep the old simple paired-via-offset schedule.
@@ -785,7 +785,7 @@ class GeneralGemmModel:
             if ctx.use_ext_paired_fast_path() and next_dst is not None:
                 code_str += f"zip2      {next_dst}.h, {self._b_low(ctx)}.h, {self._b_high(ctx)}.h\n"
             return code_str
-        return f"{ldopt}      {dst}{get_ld_element_suffix(ctx)}, {_load_predicate(ctx, role)}, [{regs.pointers.pB0}, #{lane}, MUL VL]\n"
+        return f"{ldopt}      {dst}{get_element_suffix(ctx)}, {_load_predicate(ctx, role)}, [{regs.pointers.pB0}, #{lane}, MUL VL]\n"
 
     def load_a0b0_last_k(
         self,

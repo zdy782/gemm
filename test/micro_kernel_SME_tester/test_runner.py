@@ -186,6 +186,11 @@ def _parse_range_spec(value):
     return start, end, step
 
 
+def _range_point_count(value):
+    start, end, step = _parse_range_spec(value)
+    return ((end - start) // step) + 1
+
+
 def _resolve_range_stride(value, default_value):
     text = str(value).strip().lower()
     if text in {"", "auto", "none"}:
@@ -224,6 +229,7 @@ def run_range_test(
     m_start, m_end, m_step = _parse_range_spec(M_range)
     n_start, n_end, n_step = _parse_range_spec(N_range)
     k_start, k_end, k_step = _parse_range_spec(K_range)
+    total_inner_tests = _range_point_count(M_range) * _range_point_count(N_range) * _range_point_count(K_range)
 
     lda_gen = _resolve_range_stride(lda, m_end if transA == "N" else k_end)
     ldb_gen = _resolve_range_stride(ldb, k_end if transB == "N" else n_end)
@@ -253,6 +259,9 @@ def run_range_test(
             m_start, m_end, m_step,
             n_start, n_end, n_step,
             k_start, k_end, k_step,
+            lda,
+            ldb,
+            ldc,
             lda_gen, ldb_gen, ldc_gen,
             gemm_type, transA, transB, uniq_id, repeat,
             data_type, m_vl, n_vl, pack_a, pack_b
@@ -297,17 +306,24 @@ def run_range_test(
 
         if verbose:
             print(f"[INFO] Compiling range test: M={M_range}, N={N_range}, K={K_range}")
+            print(f"[INFO] Expanded inner tests: {total_inner_tests}")
         compile_cmd = f"cd {test_path} && make -s"
-        compile_result = subprocess.run(
-            compile_cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-        )
-        if verbose and compile_result.stdout:
-            print(f"[COMPILE OUTPUT]\n{compile_result.stdout}")
+        if verbose:
+            compile_result = subprocess.run(
+                compile_cmd,
+                shell=True,
+                text=True,
+                encoding="utf-8",
+            )
+        else:
+            compile_result = subprocess.run(
+                compile_cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+            )
         if compile_result.returncode != 0:
             if verbose:
                 print(f"[ERROR] Compilation failed for M={M_range}, N={N_range}, K={K_range}")
@@ -316,16 +332,22 @@ def run_range_test(
         if verbose:
             print(f"[INFO] Running range test: M={M_range}, N={N_range}, K={K_range}")
         run_cmd = f"cd {test_path} && ./benchmark_kernel"
-        run_result = subprocess.run(
-            run_cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-        )
-        if verbose and run_result.stdout:
-            print(f"[RUN OUTPUT]\n{run_result.stdout}")
+        if verbose:
+            run_result = subprocess.run(
+                run_cmd,
+                shell=True,
+                text=True,
+                encoding="utf-8",
+            )
+        else:
+            run_result = subprocess.run(
+                run_cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+            )
         if run_result.returncode != 0:
             if verbose:
                 print(f"[ERROR] Execution failed for M={M_range}, N={N_range}, K={K_range}")

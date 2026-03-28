@@ -1,4 +1,4 @@
-from global_config import get_predicate_suffix, tile_size_from_vl
+from global_config import get_element_suffix, tile_size_from_vl
 from kernel_mm_loop_k import gen_ext_load_predicate_refresh, kernel_mm_loop_k
 
 # L2 is the inner M loop that mirrors L1 by picking the widest legal `mvl` under the already chosen `nvl` chunk.
@@ -58,7 +58,7 @@ def _gen_m_loop_block(ctx, multiplier, nvl, label, n_fullness):
     regs = ctx.registers
     next_label = f".loop_m_{multiplier - 1}vl_{nvl}_{label}" if multiplier > 2 else f".loop_m_1vl_{nvl}_{label}"
     threshold = tile_size_from_vl(multiplier - 1)
-    pred_suffix = get_predicate_suffix(ctx)
+    pred_suffix = get_element_suffix(ctx)
     vl1 = tile_size_from_vl(1)
     code_str = f""
     code_str += f".loop_m_{multiplier}vl_{nvl}_{label}:\n"
@@ -125,7 +125,7 @@ def kernel_mm_loop_L2(ctx, m_size, label, nvl, n_fullness="single"):
 
     code_str += f".loop_m_1vl_{nvl}_{label}:\n"
     code_str += f"sub      {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}\n"
-    code_str += f"whilelt  {regs.predicates.m_main}{get_predicate_suffix(ctx)}, {regs.counters.TMP_CNT}, {regs.dims.MIN_M}\n"
+    code_str += f"whilelt  {regs.predicates.m_main}{get_element_suffix(ctx)}, {regs.counters.TMP_CNT}, {regs.dims.MIN_M}\n"
     code_str += f"add      {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, #{tile_size_from_vl(1)}\n"
     code_str += gen_ext_load_predicate_refresh(ctx)
     code_str += _gen_m_fullness_dispatch(ctx, 1, nvl, label, n_fullness)

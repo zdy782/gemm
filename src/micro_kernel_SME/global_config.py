@@ -21,10 +21,6 @@ def get_h_elements_per_vl():
     return H_ELEMENTS_PER_VL
 
 
-def get_ext_logical_vl():
-    return get_s_elements_per_vl()
-
-
 def tile_size_from_vl(mult):
     return mult * get_s_elements_per_vl()
 
@@ -76,20 +72,12 @@ def get_element_suffix(ctx):
     return ".h" if ctx.is_ext_precision() else ".s"
 
 
-def get_ld_element_suffix(ctx):
-    return ".h" if ctx.is_ext_precision() else ".s"
-
-
 def get_mopa_inst(ctx):
     return "bfmopa" if ctx.is_bf16() else "fmopa"
 
 
 def get_element_size_shift(ctx):
     return 1 if ctx.is_ext_precision() else 2
-
-
-def get_predicate_suffix(ctx):
-    return ".h" if ctx.is_ext_precision() else ".s"
 
 
 def get_whilelt_increment(ctx):

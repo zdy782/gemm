@@ -233,6 +233,7 @@ int main()
     {output_type} *C = static_cast<{output_type}*>(_mm_malloc(64, {c_size} * sizeof({output_type})));
     {output_type} *refC = static_cast<{output_type}*>(_mm_malloc(64, {c_size} * sizeof({output_type})));
     {output_type} *ourC = static_cast<{output_type}*>(_mm_malloc(64, {c_size} * sizeof({output_type})));
+    bool all_passed = true;
 
     test_utils::init(A, {a_size});
     test_utils::init(B, {b_size});
@@ -256,6 +257,10 @@ int main()
 
     // Test ACC=false: C = A * B
     bool ACC = false;
+    for (int idx = 0; idx < {c_size}; ++idx) {{
+        refC[idx] = 0;
+        ourC[idx] = 0;
+    }}
     test_utils::gemm_ref(A, B, refC, M, N, K, lda, ldb, ldc, ACC, transA, transB);
     {entry_func_name}(M, N, K, A, B, ourC, lda, ldb, ldc);
     
@@ -264,6 +269,7 @@ int main()
         printf("ERROR: M=%d, N=%d, K=%d, lda=%d, ldb=%d, ldc=%d, ACC=%d, ref[%d]=%.6f, our[%d]=%.6f\\n",
             M, N, K, lda, ldb, ldc, ACC, idx, refC[idx], idx, ourC[idx]);
         test_utils::print_diff(refC, ourC, M, N, ldc);
+        all_passed = false;
     }} else {{
         printf("0------passed\\n");
     }}
@@ -286,6 +292,7 @@ int main()
         printf("ERROR: M=%d, N=%d, K=%d, lda=%d, ldb=%d, ldc=%d, ACC=%d, ref[%d]=%.6f, our[%d]=%.6f\\n",
             M, N, K, lda, ldb, ldc, ACC, idx, refC[idx], idx, ourC[idx]);
         test_utils::print_diff(refC, ourC, M, N, ldc);
+        all_passed = false;
     }} else {{
         printf("1------passed\\n");
     }}
@@ -301,7 +308,7 @@ int main()
     free(ourC);
     ourC=NULL;
     
-    return 0;
+    return all_passed ? 0 : 1;
 }}
 """
     return cc_code
@@ -317,9 +324,12 @@ def generate_sme_range_test_cpp(
     K_start: int,
     K_end: int,
     K_step: int,
-    lda: int,
-    ldb: int,
-    ldc: int,
+    lda_spec,
+    ldb_spec,
+    ldc_spec,
+    lda_gen: int,
+    ldb_gen: int,
+    ldc_gen: int,
     gemm_type: str,
     transA: str,
     transB: str,
@@ -335,9 +345,9 @@ def generate_sme_range_test_cpp(
         M_end,
         N_end,
         K_end,
-        lda,
-        ldb,
-        ldc,
+        lda_gen,
+        ldb_gen,
+        ldc_gen,
         gemm_type,
         transA,
         transB,
@@ -352,9 +362,19 @@ def generate_sme_range_test_cpp(
     input_type, output_type, input_type_include, guard_name, tol_val = test_cpp_types(spec)
     _, entry_func_name = build_symbol_names(spec, uniq_id)
 
-    max_lda = M_end if spec.transA == "N" else K_end
-    max_ldb = K_end if spec.transB == "N" else N_end
-    max_ldc = M_end
+    lda_spec_text = str(lda_spec).strip()
+    ldb_spec_text = str(ldb_spec).strip()
+    ldc_spec_text = str(ldc_spec).strip()
+    lda_is_auto = lda_spec_text.lower() in {"", "auto", "none"}
+    ldb_is_auto = ldb_spec_text.lower() in {"", "auto", "none"}
+    ldc_is_auto = ldc_spec_text.lower() in {"", "auto", "none"}
+    lda_fixed = 0 if lda_is_auto else int(lda_spec_text)
+    ldb_fixed = 0 if ldb_is_auto else int(ldb_spec_text)
+    ldc_fixed = 0 if ldc_is_auto else int(ldc_spec_text)
+
+    max_lda = lda_gen
+    max_ldb = ldb_gen
+    max_ldc = ldc_gen
     max_a_size = (K_end if spec.transA == "N" else M_end) * max_lda
     max_b_size = (N_end if spec.transB == "N" else K_end) * max_ldb
     max_c_size = N_end * max_ldc
@@ -387,6 +407,12 @@ int main()
     const int k_start = {K_start};
     const int k_end = {K_end};
     const int k_step = {K_step};
+    const bool lda_auto = {"true" if lda_is_auto else "false"};
+    const bool ldb_auto = {"true" if ldb_is_auto else "false"};
+    const bool ldc_auto = {"true" if ldc_is_auto else "false"};
+    const int lda_fixed = {lda_fixed};
+    const int ldb_fixed = {ldb_fixed};
+    const int ldc_fixed = {ldc_fixed};
     const bool perf_flag = false;
     (void)perf_flag;
     (void){repeat};
@@ -425,9 +451,24 @@ int main()
     for (int M = m_start; M <= m_end; M += m_step) {{
         for (int N = n_start; N <= n_end; N += n_step) {{
             for (int K = k_start; K <= k_end; K += k_step) {{
-                const int lda = (transA == 'N') ? M : K;
-                const int ldb = (transB == 'N') ? K : N;
-                const int ldc = M;
+                const int lda_required = (transA == 'N') ? M : K;
+                const int ldb_required = (transB == 'N') ? K : N;
+                const int ldc_required = M;
+                const int lda = lda_auto ? lda_required : lda_fixed;
+                const int ldb = ldb_auto ? ldb_required : ldb_fixed;
+                const int ldc = ldc_auto ? ldc_required : ldc_fixed;
+
+                if (lda < lda_required || ldb < ldb_required || ldc < ldc_required) {{
+                    printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "FAILED");
+                    printf("ERROR: invalid stride for M=%d, N=%d, K=%d, lda=%d (< %d), ldb=%d (< %d), ldc=%d (< %d)\\n",
+                        M, N, K, lda, lda_required, ldb, ldb_required, ldc, ldc_required);
+                    free(A);
+                    free(B);
+                    free(C);
+                    free(refC);
+                    free(ourC);
+                    return 1;
+                }}
 
                 const size_t a_cols = (transA == 'N') ? K : M;
                 const size_t b_cols = (transB == 'N') ? N : K;
@@ -437,24 +478,46 @@ int main()
 
                 test_utils::init(A, a_size);
                 test_utils::init(B, b_size);
-                test_utils::init(C, c_size);
-
                 for (size_t idx = 0; idx < c_size; ++idx) {{
-                    refC[idx] = C[idx];
-                    ourC[idx] = C[idx];
+                    refC[idx] = 0;
+                    ourC[idx] = 0;
                 }}
 
-                test_utils::gemm_ref(A, B, refC, M, N, K, lda, ldb, ldc, true, transA, transB);
+                test_utils::gemm_ref(A, B, refC, M, N, K, lda, ldb, ldc, false, transA, transB);
                 {entry_func_name}(M, N, K, A, B, ourC, lda, ldb, ldc);
 
                 if (test_utils::is_same_matrix(refC, ourC, M, N, ldc, {tol_val}, {tol_val})) {{
-                    ++passed_tests;
-                    printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "PASSED");
+                    test_utils::init(C, c_size);
+                    for (size_t idx = 0; idx < c_size; ++idx) {{
+                        refC[idx] = C[idx];
+                        ourC[idx] = C[idx];
+                    }}
+
+                    test_utils::gemm_ref(A, B, refC, M, N, K, lda, ldb, ldc, true, transA, transB);
+                    {entry_func_name}(M, N, K, A, B, ourC, lda, ldb, ldc);
+
+                    if (test_utils::is_same_matrix(refC, ourC, M, N, ldc, {tol_val}, {tol_val})) {{
+                        ++passed_tests;
+                        printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "PASSED");
+                    }} else {{
+                        ++failed_tests;
+                        const int idx = test_utils::diff_index(refC, ourC, M, N, ldc, {tol_val}, {tol_val});
+                        printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "FAILED");
+                        printf("ERROR: M=%d, N=%d, K=%d, lda=%d, ldb=%d, ldc=%d, ACC=1, ref[%d]=%.6f, our[%d]=%.6f\\n",
+                            M, N, K, lda, ldb, ldc, idx, refC[idx], idx, ourC[idx]);
+                        test_utils::print_diff(refC, ourC, M, N, ldc);
+                        free(A);
+                        free(B);
+                        free(C);
+                        free(refC);
+                        free(ourC);
+                        return 1;
+                    }}
                 }} else {{
                     ++failed_tests;
                     const int idx = test_utils::diff_index(refC, ourC, M, N, ldc, {tol_val}, {tol_val});
                     printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "FAILED");
-                    printf("ERROR: M=%d, N=%d, K=%d, lda=%d, ldb=%d, ldc=%d, ref[%d]=%.6f, our[%d]=%.6f\\n",
+                    printf("ERROR: M=%d, N=%d, K=%d, lda=%d, ldb=%d, ldc=%d, ACC=0, ref[%d]=%.6f, our[%d]=%.6f\\n",
                         M, N, K, lda, ldb, ldc, idx, refC[idx], idx, ourC[idx]);
                     test_utils::print_diff(refC, ourC, M, N, ldc);
                     free(A);
