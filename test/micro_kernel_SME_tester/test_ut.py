@@ -78,6 +78,7 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
     failed_cases = []
     current_pack = pack_label(pack_a, pack_b)
     expanded_total = sum(_expanded_points(tc) for tc in testcases)
+    detailed_logs = not _tqdm_enabled()
 
     _log(f"\n[INFO] Start running {total} test cases with pack={current_pack}...")
     _log(f"[INFO] Expanded inner tests for pack={current_pack}: {expanded_total}")
@@ -105,18 +106,19 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
             m_vl = int(tc["m_vl"])
             n_vl = int(tc["n_vl"])
 
-            _log(f"\n[{idx}/{total}] Running test case:")
-            _log(f"  pack={current_pack}, pack_a={pack_a}, pack_b={pack_b}")
-            _log(
-                f"  M={M_spec}, N={N_spec}, K={K_spec}, "
-                f"lda={tc.get('lda', 'auto')}, ldb={tc.get('ldb', 'auto')}, ldc={tc.get('ldc', 'auto')}"
-            )
-            _log(
-                f"  gemm_type={gemm_type}, transA={transA}, transB={transB}, "
-                f"data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}"
-            )
-            if is_range_case:
-                _log(f"  expanded_inner_tests={_expanded_points(tc)}")
+            if detailed_logs:
+                _log(f"\n[{idx}/{total}] Running test case:")
+                _log(f"  pack={current_pack}, pack_a={pack_a}, pack_b={pack_b}")
+                _log(
+                    f"  M={M_spec}, N={N_spec}, K={K_spec}, "
+                    f"lda={tc.get('lda', 'auto')}, ldb={tc.get('ldb', 'auto')}, ldc={tc.get('ldc', 'auto')}"
+                )
+                _log(
+                    f"  gemm_type={gemm_type}, transA={transA}, transB={transB}, "
+                    f"data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}"
+                )
+                if is_range_case:
+                    _log(f"  expanded_inner_tests={_expanded_points(tc)}")
 
             if is_range_case:
                 ok = run_range_test(
@@ -135,7 +137,7 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
                     n_vl=n_vl,
                     pack_a=pack_a,
                     pack_b=pack_b,
-                    verbose=True,
+                    verbose=detailed_logs,
                 )
             else:
                 M = int(M_spec)
@@ -152,13 +154,14 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
                     n_vl=n_vl,
                     pack_a=pack_a,
                     pack_b=pack_b,
-                    verbose=True,
+                    verbose=detailed_logs,
                 )
 
             if ok:
                 passed += 1
                 progress.set_postfix_str(f"passed={passed} failed={failed}")
-                _log("  [RESULT] PASS")
+                if detailed_logs:
+                    _log("  [RESULT] PASS")
             else:
                 failed += 1
                 failed_cases.append({
@@ -178,7 +181,8 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
                     "n_vl": n_vl,
                 })
                 progress.set_postfix_str(f"passed={passed} failed={failed}")
-                _log("  [RESULT] FAIL")
+                if detailed_logs:
+                    _log("  [RESULT] FAIL")
         except Exception as e:
             failed += 1
             failed_cases.append({
@@ -190,9 +194,11 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
                 "raw_data": tc,
             })
             progress.set_postfix_str(f"passed={passed} failed={failed}")
-            _log(f"  [RESULT] FAIL (Exception: {e})")
+            if detailed_logs:
+                _log(f"  [RESULT] FAIL (Exception: {e})")
         progress.update(1)
-        _log("-" * 80)
+        if detailed_logs:
+            _log("-" * 80)
 
     progress.close()
 
