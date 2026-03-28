@@ -5,9 +5,25 @@ import sys
 
 from test_runner import pack_label, run_range_test, run_single_test, setup_environment
 
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover - tqdm is optional on target machines.
+    tqdm = None
+
 
 current_path = os.path.dirname(os.path.abspath(__file__))
 setup_environment()
+
+
+def _tqdm_enabled():
+    return tqdm is not None and sys.stdout.isatty()
+
+
+def _log(message: str):
+    if _tqdm_enabled():
+        tqdm.write(message)
+    else:
+        print(message)
 
 
 def _range_count(spec: str):
@@ -45,9 +61,18 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
     current_pack = pack_label(pack_a, pack_b)
     expanded_total = sum(_expanded_points(tc) for tc in testcases)
 
-    print(f"\n[INFO] Start running {total} test cases with pack={current_pack}...")
-    print(f"[INFO] Expanded inner tests for pack={current_pack}: {expanded_total}")
-    print("=" * 80)
+    _log(f"\n[INFO] Start running {total} test cases with pack={current_pack}...")
+    _log(f"[INFO] Expanded inner tests for pack={current_pack}: {expanded_total}")
+    _log("=" * 80)
+
+    progress = tqdm(
+        total=total,
+        desc=f"pack={current_pack}",
+        unit="case",
+        dynamic_ncols=True,
+        leave=True,
+        disable=not _tqdm_enabled(),
+    )
 
     for idx, tc in enumerate(testcases, 1):
         try:
@@ -63,18 +88,18 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
             m_vl = int(tc["m_vl"])
             n_vl = int(tc["n_vl"])
 
-            print(f"\n[{idx}/{total}] Running test case:")
-            print(f"  pack={current_pack}, pack_a={pack_a}, pack_b={pack_b}")
-            print(
+            _log(f"\n[{idx}/{total}] Running test case:")
+            _log(f"  pack={current_pack}, pack_a={pack_a}, pack_b={pack_b}")
+            _log(
                 f"  M={M_spec}, N={N_spec}, K={K_spec}, "
                 f"lda={tc.get('lda', 'auto')}, ldb={tc.get('ldb', 'auto')}, ldc={tc.get('ldc', 'auto')}"
             )
-            print(
+            _log(
                 f"  gemm_type={gemm_type}, transA={transA}, transB={transB}, "
                 f"data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}"
             )
             if is_range_case:
-                print(f"  expanded_inner_tests={_expanded_points(tc)}")
+                _log(f"  expanded_inner_tests={_expanded_points(tc)}")
 
             if is_range_case:
                 ok = run_range_test(
@@ -115,7 +140,8 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
 
             if ok:
                 passed += 1
-                print("  [RESULT] PASS")
+                progress.set_postfix_str(f"passed={passed} failed={failed}")
+                _log("  [RESULT] PASS")
             else:
                 failed += 1
                 failed_cases.append({
@@ -134,7 +160,8 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
                     "m_vl": m_vl,
                     "n_vl": n_vl,
                 })
-                print("  [RESULT] FAIL")
+                progress.set_postfix_str(f"passed={passed} failed={failed}")
+                _log("  [RESULT] FAIL")
         except Exception as e:
             failed += 1
             failed_cases.append({
@@ -145,31 +172,35 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
                 "error": f"Parse/Execute exception: {e}",
                 "raw_data": tc,
             })
-            print(f"  [RESULT] FAIL (Exception: {e})")
-        print("-" * 80)
+            progress.set_postfix_str(f"passed={passed} failed={failed}")
+            _log(f"  [RESULT] FAIL (Exception: {e})")
+        progress.update(1)
+        _log("-" * 80)
 
-    print("\n" + "=" * 80)
-    print(f"[TEST SUMMARY] pack={current_pack}, Total: {total}, Passed: {passed}, Failed: {failed}")
-    print("=" * 80)
+    progress.close()
+
+    _log("\n" + "=" * 80)
+    _log(f"[TEST SUMMARY] pack={current_pack}, Total: {total}, Passed: {passed}, Failed: {failed}")
+    _log("=" * 80)
 
     if failed > 0:
-        print(f"\n[FAILED CASES DETAIL] (pack={current_pack}, Total: {failed} cases)")
-        print("-" * 80)
+        _log(f"\n[FAILED CASES DETAIL] (pack={current_pack}, Total: {failed} cases)")
+        _log("-" * 80)
         for i, case in enumerate(failed_cases, 1):
-            print(f"\n[{i}] Test case #{case['index']}:")
-            print(f"  pack={case['pack']}, pack_a={case['pack_a']}, pack_b={case['pack_b']}")
+            _log(f"\n[{i}] Test case #{case['index']}:")
+            _log(f"  pack={case['pack']}, pack_a={case['pack_a']}, pack_b={case['pack_b']}")
             if "error" in case:
-                print(f"  Error: {case['error']}")
-                print(f"  Raw data: {case['raw_data']}")
+                _log(f"  Error: {case['error']}")
+                _log(f"  Raw data: {case['raw_data']}")
             else:
-                print(f"  M={case['M']}, N={case['N']}, K={case['K']}")
-                print(f"  lda={case['lda']}, ldb={case['ldb']}, ldc={case['ldc']}")
-                print(f"  gemm_type={case['gemm_type']}, transA={case['transA']}, transB={case['transB']}")
-                print(
+                _log(f"  M={case['M']}, N={case['N']}, K={case['K']}")
+                _log(f"  lda={case['lda']}, ldb={case['ldb']}, ldc={case['ldc']}")
+                _log(f"  gemm_type={case['gemm_type']}, transA={case['transA']}, transB={case['transB']}")
+                _log(
                     f"  data_type={case['data_type']}, m_vl={case['m_vl']}, "
                     f"n_vl={case['n_vl']}"
                 )
-        print("-" * 80)
+        _log("-" * 80)
 
     return {
         "pack": current_pack,
@@ -233,8 +264,19 @@ def main():
         testcases = list(reader)
 
     mode_results = []
-    for pack_a, pack_b in _pack_modes(args.all_packs, args.pack_a, args.pack_b):
+    pack_modes = _pack_modes(args.all_packs, args.pack_a, args.pack_b)
+    mode_progress = tqdm(
+        total=len(pack_modes),
+        desc="pack-modes",
+        unit="mode",
+        dynamic_ncols=True,
+        leave=True,
+        disable=not _tqdm_enabled(),
+    )
+    for pack_a, pack_b in pack_modes:
         mode_results.append(_run_mode(testcases, pack_a, pack_b))
+        mode_progress.update(1)
+    mode_progress.close()
 
     total = sum(mode["total"] for mode in mode_results)
     passed = sum(mode["passed"] for mode in mode_results)
