@@ -340,6 +340,7 @@ def generate_sme_range_test_cpp(
     n_vl: int = 4,
     pack_a: bool = False,
     pack_b: bool = False,
+    emit_progress_markers: bool = False,
 ):
     spec = KernelSpec.from_args(
         M_end,
@@ -410,6 +411,7 @@ int main()
     const bool lda_auto = {"true" if lda_is_auto else "false"};
     const bool ldb_auto = {"true" if ldb_is_auto else "false"};
     const bool ldc_auto = {"true" if ldc_is_auto else "false"};
+    const bool emit_progress_markers = {"true" if emit_progress_markers else "false"};
     const int lda_fixed = {lda_fixed};
     const int ldb_fixed = {ldb_fixed};
     const int ldc_fixed = {ldc_fixed};
@@ -417,17 +419,21 @@ int main()
     (void)perf_flag;
     (void){repeat};
 
-    printf("M=%d:%d:%d, N=%d:%d:%d, K=%d:%d:%d, transA=%c, transB=%c, data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}, pack_a={str(pack_a).lower()}, pack_b={str(pack_b).lower()}\\n",
-        m_start, m_end, m_step, n_start, n_end, n_step, k_start, k_end, k_step, transA, transB);
+    if (!emit_progress_markers) {{
+        printf("M=%d:%d:%d, N=%d:%d:%d, K=%d:%d:%d, transA=%c, transB=%c, data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}, pack_a={str(pack_a).lower()}, pack_b={str(pack_b).lower()}\\n",
+            m_start, m_end, m_step, n_start, n_end, n_step, k_start, k_end, k_step, transA, transB);
+    }}
 
     const int total_tests =
         ((m_end - m_start) / m_step + 1) *
         ((n_end - n_start) / n_step + 1) *
         ((k_end - k_start) / k_step + 1);
 
-    printf("---------------------------------------------------------------------------------------\\n");
-    printf("%12s %12s %12s %14s %14s %14s\\n", "M", "N", "K", "lda", "ldb", "status");
-    printf("---------------------------------------------------------------------------------------\\n");
+    if (!emit_progress_markers) {{
+        printf("---------------------------------------------------------------------------------------\\n");
+        printf("%12s %12s %12s %14s %14s %14s\\n", "M", "N", "K", "lda", "ldb", "status");
+        printf("---------------------------------------------------------------------------------------\\n");
+    }}
 
     {input_type} *A = static_cast<{input_type}*>(_mm_malloc(64, {max_a_size} * sizeof({input_type})));
     {input_type} *B = static_cast<{input_type}*>(_mm_malloc(64, {max_b_size} * sizeof({input_type})));
@@ -447,6 +453,7 @@ int main()
 
     int passed_tests = 0;
     int failed_tests = 0;
+    int completed_tests = 0;
 
     for (int M = m_start; M <= m_end; M += m_step) {{
         for (int N = n_start; N <= n_end; N += n_step) {{
@@ -459,7 +466,9 @@ int main()
                 const int ldc = ldc_auto ? ldc_required : ldc_fixed;
 
                 if (lda < lda_required || ldb < ldb_required || ldc < ldc_required) {{
-                    printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "FAILED");
+                    if (!emit_progress_markers) {{
+                        printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "FAILED");
+                    }}
                     printf("ERROR: invalid stride for M=%d, N=%d, K=%d, lda=%d (< %d), ldb=%d (< %d), ldc=%d (< %d)\\n",
                         M, N, K, lda, lda_required, ldb, ldb_required, ldc, ldc_required);
                     free(A);
@@ -498,11 +507,15 @@ int main()
 
                     if (test_utils::is_same_matrix(refC, ourC, M, N, ldc, {tol_val}, {tol_val})) {{
                         ++passed_tests;
-                        printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "PASSED");
+                        if (!emit_progress_markers) {{
+                            printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "PASSED");
+                        }}
                     }} else {{
                         ++failed_tests;
                         const int idx = test_utils::diff_index(refC, ourC, M, N, ldc, {tol_val}, {tol_val});
-                        printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "FAILED");
+                        if (!emit_progress_markers) {{
+                            printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "FAILED");
+                        }}
                         printf("ERROR: M=%d, N=%d, K=%d, lda=%d, ldb=%d, ldc=%d, ACC=1, ref[%d]=%.6f, our[%d]=%.6f\\n",
                             M, N, K, lda, ldb, ldc, idx, refC[idx], idx, ourC[idx]);
                         test_utils::print_diff(refC, ourC, M, N, ldc);
@@ -516,7 +529,9 @@ int main()
                 }} else {{
                     ++failed_tests;
                     const int idx = test_utils::diff_index(refC, ourC, M, N, ldc, {tol_val}, {tol_val});
-                    printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "FAILED");
+                    if (!emit_progress_markers) {{
+                        printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "FAILED");
+                    }}
                     printf("ERROR: M=%d, N=%d, K=%d, lda=%d, ldb=%d, ldc=%d, ACC=0, ref[%d]=%.6f, our[%d]=%.6f\\n",
                         M, N, K, lda, ldb, ldc, idx, refC[idx], idx, ourC[idx]);
                     test_utils::print_diff(refC, ourC, M, N, ldc);
@@ -527,11 +542,19 @@ int main()
                     free(ourC);
                     return 1;
                 }}
+
+                ++completed_tests;
+                if (emit_progress_markers && ((completed_tests & 255) == 0 || completed_tests == total_tests)) {{
+                    printf("__AUTOGEMM_PROGRESS__ %d %d\\n", completed_tests, total_tests);
+                    fflush(stdout);
+                }}
             }}
         }}
     }}
 
-    printf("---------------------------------------------------------------------------------------\\n");
+    if (!emit_progress_markers) {{
+        printf("---------------------------------------------------------------------------------------\\n");
+    }}
     printf("tests=%d passed=%d failed=%d\\n", total_tests, passed_tests, failed_tests);
 
     free(A);

@@ -5,6 +5,11 @@ import string
 import shutil
 import subprocess
 
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover - tqdm is optional on target machines.
+    tqdm = None
+
 
 def pack_label(pack_a=False, pack_b=False):
     if pack_a and pack_b:
@@ -14,6 +19,28 @@ def pack_label(pack_a=False, pack_b=False):
     if pack_b:
         return "packb"
     return "nopack"
+
+
+def _tqdm_enabled():
+    return tqdm is not None and sys.stdout.isatty()
+
+
+class _NullProgress:
+    def update(self, _n=1):
+        return None
+
+    def close(self):
+        return None
+
+    def set_postfix_str(self, _text):
+        return None
+
+
+def _make_progress(*args, **kwargs):
+    if tqdm is None:
+        return _NullProgress()
+    kwargs.setdefault("disable", not _tqdm_enabled())
+    return tqdm(*args, **kwargs)
 
 
 def setup_environment():
@@ -216,6 +243,7 @@ def run_range_test(
     pack_b=False,
     verbose=True,
     keep_tmp=False,
+    show_inner_progress=False,
 ):
     """Run one ref-style range UT row in a single generated tester."""
     current_path = setup_environment()
@@ -264,7 +292,8 @@ def run_range_test(
             ldc,
             lda_gen, ldb_gen, ldc_gen,
             gemm_type, transA, transB, uniq_id, repeat,
-            data_type, m_vl, n_vl, pack_a, pack_b
+            data_type, m_vl, n_vl, pack_a, pack_b,
+            emit_progress_markers=show_inner_progress and _tqdm_enabled(),
         )
         if not cpp_code:
             if verbose:
@@ -332,6 +361,50 @@ def run_range_test(
         if verbose:
             print(f"[INFO] Running range test: M={M_range}, N={N_range}, K={K_range}")
         run_cmd = f"cd {test_path} && ./benchmark_kernel"
+        if show_inner_progress and _tqdm_enabled():
+            progress = _make_progress(
+                total=total_inner_tests,
+                desc="inner-tests",
+                unit="test",
+                dynamic_ncols=True,
+                leave=False,
+            )
+            progress_done = 0
+            non_progress_lines = []
+            run_proc = subprocess.Popen(
+                run_cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
+            )
+            assert run_proc.stdout is not None
+            for raw_line in run_proc.stdout:
+                line = raw_line.rstrip("\n")
+                if line.startswith("__AUTOGEMM_PROGRESS__ "):
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        done = int(parts[1])
+                        if done > progress_done:
+                            progress.update(done - progress_done)
+                            progress_done = done
+                    continue
+                if line:
+                    non_progress_lines.append(line)
+            run_proc.wait()
+            if progress_done < total_inner_tests:
+                progress.update(total_inner_tests - progress_done)
+            progress.close()
+            if run_proc.returncode != 0:
+                if non_progress_lines:
+                    print("[RUN OUTPUT]")
+                    print("\n".join(non_progress_lines))
+                if verbose:
+                    print(f"[ERROR] Execution failed for M={M_range}, N={N_range}, K={K_range}")
+                return False
+            return True
         if verbose:
             run_result = subprocess.run(
                 run_cmd,
