@@ -26,6 +26,24 @@ def _log(message: str):
         print(message)
 
 
+class _NullProgress:
+    def update(self, _n=1):
+        return None
+
+    def close(self):
+        return None
+
+    def set_postfix_str(self, _text):
+        return None
+
+
+def _make_progress(*args, **kwargs):
+    if tqdm is None:
+        return _NullProgress()
+    kwargs.setdefault("disable", not _tqdm_enabled())
+    return tqdm(*args, **kwargs)
+
+
 def _range_count(spec: str):
     parts = str(spec).strip().split(":")
     if len(parts) == 1:
@@ -65,13 +83,12 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
     _log(f"[INFO] Expanded inner tests for pack={current_pack}: {expanded_total}")
     _log("=" * 80)
 
-    progress = tqdm(
+    progress = _make_progress(
         total=total,
         desc=f"pack={current_pack}",
         unit="case",
         dynamic_ncols=True,
         leave=True,
-        disable=not _tqdm_enabled(),
     )
 
     for idx, tc in enumerate(testcases, 1):
@@ -265,13 +282,12 @@ def main():
 
     mode_results = []
     pack_modes = _pack_modes(args.all_packs, args.pack_a, args.pack_b)
-    mode_progress = tqdm(
+    mode_progress = _make_progress(
         total=len(pack_modes),
         desc="pack-modes",
         unit="mode",
         dynamic_ncols=True,
         leave=True,
-        disable=not _tqdm_enabled(),
     )
     for pack_a, pack_b in pack_modes:
         mode_results.append(_run_mode(testcases, pack_a, pack_b))
