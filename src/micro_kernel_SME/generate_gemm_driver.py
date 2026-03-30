@@ -82,6 +82,7 @@ def generate_gemm_driver(spec, kernel_func_name: str, driver_func_name: str) -> 
     a_copy_code = a_pack_stmt if a_needs_pack else a_direct_stmt
 
     code = f"""
+#include <stdint.h>
 #include <arm_sve.h>
 {input_include}
 

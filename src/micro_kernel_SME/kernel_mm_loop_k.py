@@ -33,15 +33,17 @@ def _get_kernel_save_fn(mvl, nvl):
     return KERNEL_SAVE_FUN_MAP[(mvl, nvl)]
 
 
-def gen_ext_load_predicate_refresh(ctx):
-    # Build the widened ext predicates once per active M tile so full paired load helpers can reuse them across the whole K loop.
+def gen_ext_load_predicate_refresh(ctx, need_m_tail=True, need_n_tail=True):
+    # Build only the widened ext predicates that the selected tile can actually consume in the upcoming K loop.
     if not ctx.is_ext_precision():
         return ""
     regs = ctx.registers
     code_str = f"zip1      {regs.ext_predicate('m_main')}.h, {regs.predicates.m_main}.h, {regs.predicates.m_main}.h\n"
-    code_str += f"zip1      {regs.ext_predicate('m_tail')}.h, {regs.predicates.m_tail}.h, {regs.predicates.m_tail}.h\n"
     code_str += f"zip1      {regs.ext_predicate('n_main')}.h, {regs.predicates.n_main}.h, {regs.predicates.n_main}.h\n"
-    code_str += f"zip1      {regs.ext_predicate('n_tail')}.h, {regs.predicates.n_tail}.h, {regs.predicates.n_tail}.h\n"
+    if need_m_tail:
+        code_str += f"zip1      {regs.ext_predicate('m_tail')}.h, {regs.predicates.m_tail}.h, {regs.predicates.m_tail}.h\n"
+    if need_n_tail:
+        code_str += f"zip1      {regs.ext_predicate('n_tail')}.h, {regs.predicates.n_tail}.h, {regs.predicates.n_tail}.h\n"
     return code_str
 
 
@@ -55,17 +57,6 @@ def _gen_ext_hotpath_setup(ctx, mvl, nvl, kernel_variant):
     code_str = f"rdvl      {regs.address.TMP_PTR2}, #1\n"
     code_str += f"lsr       {regs.address.TMP_PTR2}, {regs.address.TMP_PTR2}, #1\n"
     return code_str
-
-
-def _gen_ext_save_predicate_refresh(ctx):
-    # Refresh the widened M-side save predicates right before save so exact-full paired paths do not depend on stale load-side p4/p5 state.
-    if not ctx.is_ext_precision():
-        return ""
-    regs = ctx.registers
-    code_str = f"zip1      {regs.ext_predicate('m_main')}.h, {regs.predicates.m_main}.h, {regs.predicates.m_main}.h\n"
-    code_str += f"zip1      {regs.ext_predicate('m_tail')}.h, {regs.predicates.m_tail}.h, {regs.predicates.m_tail}.h\n"
-    return code_str
-
 
 def kernel_mm_loop_k_LU(ctx, label, kernel, kernel_last_k, cnt, mvl, nvl, kernel_variant):
     regs = ctx.registers
@@ -151,7 +142,6 @@ def kernel_mm_loop_k(ctx, label, mvl, nvl, m_fullness="single", n_fullness="sing
         kernel_variant,
     )
     code_str += f".SAVE_C_{mvl}_{nvl}_{label}:\n"
-    code_str += _gen_ext_save_predicate_refresh(ctx)
     code_str += _get_kernel_save_fn(mvl, nvl)(ctx, label)
     code_str += f"b        .end_of_loop_k_{nvl}_{exit_label}\n"
     return code_str

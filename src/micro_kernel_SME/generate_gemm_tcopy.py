@@ -6,7 +6,8 @@ def tcopy_traits(input_type: str):
             "load_ptr_type": "float32_t",
             "store_ptr_type": "float32_t",
             "vec_type": "svfloat32_t",
-            "load_fn": "svldnt1_f32",
+            "load_fn_short": "svld1_f32",
+            "load_fn_large": "svldnt1_f32",
             "store_fn": "svst1_f32",
         }
     if input_type == "__fp16":
@@ -16,7 +17,8 @@ def tcopy_traits(input_type: str):
             "load_ptr_type": "float16_t",
             "store_ptr_type": "float16_t",
             "vec_type": "svfloat16_t",
-            "load_fn": "svldnt1_f16",
+            "load_fn_short": "svld1_f16",
+            "load_fn_large": "svldnt1_f16",
             "store_fn": "svst1_f16",
         }
     if input_type == "__bf16":
@@ -26,7 +28,8 @@ def tcopy_traits(input_type: str):
             "load_ptr_type": "bfloat16_t",
             "store_ptr_type": "bfloat16_t",
             "vec_type": "svbfloat16_t",
-            "load_fn": "svldnt1_bf16",
+            "load_fn_short": "svld1_bf16",
+            "load_fn_large": "svldnt1_bf16",
             "store_fn": "svst1_bf16",
         }
     raise ValueError(f"Unsupported input_type for tcopy: {input_type}")
@@ -43,7 +46,8 @@ def generate_gemm_tcopy(cname: str, input_type: str, tcopy_type: str) -> str:
 static void {cname}(int k, int n, const {input_type} *src, int ldsrc, {input_type} *dst)
 {{
     const int svcnt = {traits['svcnt']};
-    const int eleSz = svcnt * {unroll_name};
+    const bool large_k = k > 64;
+    const int eleSz = svcnt * {unroll_name} * (large_k ? 2 : 1);
     const {traits['load_ptr_type']} *a = reinterpret_cast<const {traits['load_ptr_type']} *>(src);
     {traits['store_ptr_type']} *b = reinterpret_cast<{traits['store_ptr_type']} *>(dst);
     int minI = 0;
@@ -60,7 +64,7 @@ static void {cname}(int k, int n, const {input_type} *src, int ldsrc, {input_typ
             pg = svwhilelt_{traits['pg_suffix']}_s32(is, minI);
             do {{
                 uint64_t cnt = svcntp_{traits['pg_suffix']}(svptrue_{traits['pg_suffix']}(), pg);
-                packed = {traits['load_fn']}(pg, tmpa);
+                packed = large_k ? {traits['load_fn_large']}(pg, tmpa) : {traits['load_fn_short']}(pg, tmpa);
                 {traits['store_fn']}(pg, tmpb, packed);
                 tmpa += cnt;
                 tmpb += cnt;

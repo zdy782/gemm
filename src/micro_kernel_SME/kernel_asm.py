@@ -1,6 +1,6 @@
 from copy import deepcopy
 
-from global_config import LDNT1, STNT1, get_element_size_shift, get_element_suffix, get_ld1, get_mopa_inst, tile_size_from_vl
+from global_config import LDNT1, STNT1, get_element_size_shift, get_element_suffix, get_ld1, get_mopa_inst
 
 # This file converts a chosen `mvl x nvl` tile into the exact load, mopa, and pointer-update schedule that will be generated.
 

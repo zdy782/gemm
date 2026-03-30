@@ -70,7 +70,7 @@ def _gen_m_loop_block(ctx, multiplier, nvl, label, n_fullness):
         code_str += f"add      {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, #{vl1}\n"
     code_str += f"whilelt  {regs.predicates.m_tail}{pred_suffix}, {regs.counters.TMP_CNT}, {regs.dims.MIN_M}\n"
     code_str += f"add      {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, #{vl1}\n"
-    code_str += gen_ext_load_predicate_refresh(ctx)
+    code_str += gen_ext_load_predicate_refresh(ctx, need_m_tail=True, need_n_tail=(nvl != "1VL"))
     code_str += _gen_m_fullness_dispatch(ctx, multiplier, nvl, label, n_fullness)
     return code_str
 
@@ -127,7 +127,7 @@ def kernel_mm_loop_L2(ctx, m_size, label, nvl, n_fullness="single"):
     code_str += f"sub      {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}\n"
     code_str += f"whilelt  {regs.predicates.m_main}{get_element_suffix(ctx)}, {regs.counters.TMP_CNT}, {regs.dims.MIN_M}\n"
     code_str += f"add      {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, #{tile_size_from_vl(1)}\n"
-    code_str += gen_ext_load_predicate_refresh(ctx)
+    code_str += gen_ext_load_predicate_refresh(ctx, need_m_tail=False, need_n_tail=(nvl != "1VL"))
     code_str += _gen_m_fullness_dispatch(ctx, 1, nvl, label, n_fullness)
     code_str += f".end_of_loop_k_{nvl}_{label}:\n"
     code_str += f"add      {regs.counters.counterI}, {regs.counters.counterI}, {regs.dims.MIN_M}\n"
