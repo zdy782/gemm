@@ -17,6 +17,13 @@ def build_symbol_names(spec: KernelSpec, uniq_id: str):
     )
 
 
+def build_profile_symbol_names(uniq_id: str):
+    return (
+        f"reset_profile_{uniq_id}",
+        f"get_profile_{uniq_id}",
+    )
+
+
 def test_cpp_types(spec: KernelSpec):
     if spec.is_bf16():
         return "__bf16", "float", "#include <arm_bf16.h>", "__BGEMM_KERNEL_H", get_tolerance_value(spec)
@@ -134,6 +141,7 @@ def generate_sme_test_cpp(
     n_vl: int = 4,
     pack_a: bool = False,
     pack_b: bool = False,
+    profile_pack: bool = False,
 ):
     """Generate C++ test file for SME GEMM kernel
 
@@ -190,12 +198,28 @@ def generate_sme_test_cpp(
     c_size = N * ldc
 
     _, entry_func_name = build_symbol_names(spec, uniq_id)
+    reset_profile_name, get_profile_name = build_profile_symbol_names(uniq_id)
 
     cc_code = test_cpp_prelude(guard_name, input_type_include)
 
     # extern declaration
     cc_code += f"""
 extern "C" int {entry_func_name}(const long M, const long N, const long K, const {input_type} *A, const {input_type} *B, {output_type} *C, const long lda, const long ldb, const long ldc);
+"""
+    if profile_pack:
+        cc_code += f"""
+struct AutoGemmProfile {{
+    double a_pack_ms;
+    double b_pack_ms;
+    double kernel_ms;
+    double total_ms;
+    unsigned long long a_pack_calls;
+    unsigned long long b_pack_calls;
+    unsigned long long kernel_calls;
+}};
+
+extern "C" void {reset_profile_name}();
+extern "C" const AutoGemmProfile* {get_profile_name}();
 """
 
     # test part
@@ -246,6 +270,13 @@ int main()
         {entry_func_name}(M, N, K, A, B, C, lda, ldb, ldc);
     }}
 
+"""
+    if profile_pack:
+        cc_code += f"""
+    {reset_profile_name}();
+"""
+    cc_code += f"""
+
     Timer t;
     for (int i = 0; i < n_loops; ++i) {{
         {entry_func_name}(M, N, K, A, B, C, lda, ldb, ldc);
@@ -254,6 +285,24 @@ int main()
     float latency = t.getTime();
     float gflops = M * N * K * 2 / latency * n_loops / 1000000;
     printf("GFLOPS: %.5f ", gflops);
+"""
+    if profile_pack:
+        cc_code += f"""
+    const AutoGemmProfile* profile = {get_profile_name}();
+    const double pack_ms = profile->a_pack_ms + profile->b_pack_ms;
+    const double inv_total_pct = profile->total_ms > 0.0 ? (100.0 / profile->total_ms) : 0.0;
+    printf("PROFILE: total_ms=%.5f, a_pack_ms=%.5f, b_pack_ms=%.5f, pack_ms=%.5f, kernel_ms=%.5f, a_pack_pct=%.2f, b_pack_pct=%.2f, pack_pct=%.2f, kernel_pct=%.2f ",
+        profile->total_ms,
+        profile->a_pack_ms,
+        profile->b_pack_ms,
+        pack_ms,
+        profile->kernel_ms,
+        profile->a_pack_ms * inv_total_pct,
+        profile->b_pack_ms * inv_total_pct,
+        pack_ms * inv_total_pct,
+        profile->kernel_ms * inv_total_pct);
+"""
+    cc_code += f"""
 
     // Test ACC=false: C = A * B
     bool ACC = false;
@@ -605,4 +654,11 @@ def generate_sme_driver_cpp(
     )
     assert_valid_tile_combo(spec.tile.m_vl, spec.tile.n_vl)
     kernel_func_name, driver_func_name = build_symbol_names(spec, uniq_id)
-    return generate_gemm_driver(spec, kernel_func_name, driver_func_name)
+    reset_profile_name, get_profile_name = build_profile_symbol_names(uniq_id)
+    return generate_gemm_driver(
+        spec,
+        kernel_func_name,
+        driver_func_name,
+        reset_profile_name,
+        get_profile_name,
+    )

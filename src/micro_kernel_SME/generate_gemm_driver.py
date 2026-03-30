@@ -22,7 +22,13 @@ def gen_driver_kernel_call(kernel_func_name, a_ptr, b_ptr, c_ptr, lda_name, ldb_
     )
 
 
-def generate_gemm_driver(spec, kernel_func_name: str, driver_func_name: str) -> str:
+def generate_gemm_driver(
+    spec,
+    kernel_func_name: str,
+    driver_func_name: str,
+    reset_profile_name: str,
+    get_profile_name: str,
+) -> str:
     input_type, output_type, input_include = precision_types(spec)
 
     prefix = spec.gemm_prefix()
@@ -37,9 +43,9 @@ def generate_gemm_driver(spec, kernel_func_name: str, driver_func_name: str) -> 
     b_needs_pack = spec.pack_b
 
     if spec.transA == "N":
-        a_pack_stmt = (
-            f"{itcopy_name}(minL, minI, A + is + ls * lda, lda, A_pack);\n"
-            f"                sa = A_pack;\n"
+        a_pack_call = f"{itcopy_name}(minL, minI, A + is + ls * lda, lda, A_pack);"
+        a_pack_after = (
+            f"sa = A_pack;\n"
             f"                lda_kernel = minI;\n"
         )
         a_direct_stmt = (
@@ -47,9 +53,9 @@ def generate_gemm_driver(spec, kernel_func_name: str, driver_func_name: str) -> 
             f"                lda_kernel = lda;\n"
         )
     else:
-        a_pack_stmt = (
-            f"{incopy_name}(minL, minI, A + ls + is * lda, lda, A_pack);\n"
-            f"                sa = A_pack;\n"
+        a_pack_call = f"{incopy_name}(minL, minI, A + ls + is * lda, lda, A_pack);"
+        a_pack_after = (
+            f"sa = A_pack;\n"
             f"                lda_kernel = minI;\n"
         )
         a_direct_stmt = (
@@ -58,9 +64,9 @@ def generate_gemm_driver(spec, kernel_func_name: str, driver_func_name: str) -> 
         )
 
     if spec.transB == "N":
-        b_pack_stmt = (
-            f"{oncopy_name}(minL, minJ, B + ls + js * ldb, ldb, B_pack);\n"
-            f"            sb = B_pack;\n"
+        b_pack_call = f"{oncopy_name}(minL, minJ, B + ls + js * ldb, ldb, B_pack);"
+        b_pack_after = (
+            f"sb = B_pack;\n"
             f"            ldb_kernel = minJ;\n"
         )
         b_direct_stmt = (
@@ -68,9 +74,9 @@ def generate_gemm_driver(spec, kernel_func_name: str, driver_func_name: str) -> 
             f"            ldb_kernel = ldb;\n"
         )
     else:
-        b_pack_stmt = (
-            f"{otcopy_name}(minL, minJ, B + js + ls * ldb, ldb, B_pack);\n"
-            f"            sb = B_pack;\n"
+        b_pack_call = f"{otcopy_name}(minL, minJ, B + js + ls * ldb, ldb, B_pack);"
+        b_pack_after = (
+            f"sb = B_pack;\n"
             f"            ldb_kernel = minJ;\n"
         )
         b_direct_stmt = (
@@ -78,15 +84,72 @@ def generate_gemm_driver(spec, kernel_func_name: str, driver_func_name: str) -> 
             f"            ldb_kernel = ldb;\n"
         )
 
-    b_copy_code = b_pack_stmt if b_needs_pack else b_direct_stmt
-    a_copy_code = a_pack_stmt if a_needs_pack else a_direct_stmt
+    if b_needs_pack:
+        b_copy_code = (
+            "const uint64_t b_pack_start_ns = autogemm_now_ns();\n"
+            f"            {b_pack_call}\n"
+            "            autogemm_profile.b_pack_ms += autogemm_elapsed_ms(b_pack_start_ns, autogemm_now_ns());\n"
+            "            ++autogemm_profile.b_pack_calls;\n"
+            f"            {b_pack_after}"
+        )
+    else:
+        b_copy_code = b_direct_stmt
+
+    if a_needs_pack:
+        a_copy_code = (
+            "const uint64_t a_pack_start_ns = autogemm_now_ns();\n"
+            f"                {a_pack_call}\n"
+            "                autogemm_profile.a_pack_ms += autogemm_elapsed_ms(a_pack_start_ns, autogemm_now_ns());\n"
+            "                ++autogemm_profile.a_pack_calls;\n"
+            f"                {a_pack_after}"
+        )
+    else:
+        a_copy_code = a_direct_stmt
+
+    kernel_call_code = (
+        "const uint64_t kernel_start_ns = autogemm_now_ns();\n"
+        f"                {gen_driver_kernel_call(kernel_func_name, 'sa', 'sb', 'C + is + js * ldc', 'lda_kernel', 'ldb_kernel', 'ldc')}\n"
+        "                autogemm_profile.kernel_ms += autogemm_elapsed_ms(kernel_start_ns, autogemm_now_ns());\n"
+        "                ++autogemm_profile.kernel_calls;\n"
+    )
 
     code = f"""
 #include <stdint.h>
+#include <time.h>
 #include <arm_sve.h>
 {input_include}
 
 extern "C" int {kernel_func_name}(const long M, const long N, const long K, const {input_type} *A, const {input_type} *B, {output_type} *C, const long lda, const long ldb, const long ldc);
+
+struct AutoGemmProfile {{
+    double a_pack_ms;
+    double b_pack_ms;
+    double kernel_ms;
+    double total_ms;
+    unsigned long long a_pack_calls;
+    unsigned long long b_pack_calls;
+    unsigned long long kernel_calls;
+}};
+
+static AutoGemmProfile autogemm_profile = {{0.0, 0.0, 0.0, 0.0, 0ULL, 0ULL, 0ULL}};
+
+static inline uint64_t autogemm_now_ns() {{
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + static_cast<uint64_t>(ts.tv_nsec);
+}}
+
+static inline double autogemm_elapsed_ms(uint64_t start_ns, uint64_t end_ns) {{
+    return static_cast<double>(end_ns - start_ns) / 1000000.0;
+}}
+
+extern "C" void {reset_profile_name}() {{
+    autogemm_profile = {{0.0, 0.0, 0.0, 0.0, 0ULL, 0ULL, 0ULL}};
+}}
+
+extern "C" const AutoGemmProfile* {get_profile_name}() {{
+    return &autogemm_profile;
+}}
 """
 
     if a_needs_pack:
@@ -112,6 +175,7 @@ static constexpr int AUTOGEMM_COPY_UNROLL_N = {spec.tile.n_vl};
     code += f"""
 extern "C" int {driver_func_name}(const long M, const long N, const long K, const {input_type} *A, const {input_type} *B, {output_type} *C, const long lda, const long ldb, const long ldc)
 {{
+    const uint64_t total_start_ns = autogemm_now_ns();
     const {input_type} *sa = nullptr;
     const {input_type} *sb = nullptr;
     long lda_kernel = 0;
@@ -134,13 +198,14 @@ extern "C" int {driver_func_name}(const long M, const long N, const long K, cons
                     minI = {GEMM_P};
                 }}
                 {a_copy_code}
-                {gen_driver_kernel_call(kernel_func_name, "sa", "sb", "C + is + js * ldc", "lda_kernel", "ldb_kernel", "ldc")}
+                {kernel_call_code}
                 is += minI;
             }}
             ls += minL;
         }}
         js += minJ;
     }}
+    autogemm_profile.total_ms += autogemm_elapsed_ms(total_start_ns, autogemm_now_ns());
     return 0;
 }}
 """

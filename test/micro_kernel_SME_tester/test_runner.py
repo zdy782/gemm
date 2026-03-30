@@ -70,6 +70,7 @@ def run_single_test(
     n_vl=4,
     pack_a=False,
     pack_b=False,
+    profile_pack=False,
     verbose=True,
     keep_tmp=False,
 ):
@@ -102,7 +103,23 @@ def run_single_test(
             f.write(asm_code)
 
         cpp_code = generate_sme_test_cpp(
-            M, N, K, lda, ldb, ldc, gemm_type, transA, transB, uniq_id, repeat, data_type, m_vl, n_vl, pack_a, pack_b
+            M,
+            N,
+            K,
+            lda,
+            ldb,
+            ldc,
+            gemm_type,
+            transA,
+            transB,
+            uniq_id,
+            repeat,
+            data_type,
+            m_vl,
+            n_vl,
+            pack_a,
+            pack_b,
+            profile_pack,
         )
         if not cpp_code:
             if verbose:

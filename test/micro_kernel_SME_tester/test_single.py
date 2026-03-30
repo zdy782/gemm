@@ -19,6 +19,7 @@ parser.add_argument("--m_vl", type=int, default=1, choices=[1, 2, 3, 4])
 parser.add_argument("--n_vl", type=int, default=4, choices=[1, 2, 3, 4])
 parser.add_argument("--pack_a", action="store_true")
 parser.add_argument("--pack_b", action="store_true")
+parser.add_argument("--profile_pack", action="store_true")
 
 args = parser.parse_args()
 
@@ -45,6 +46,7 @@ success = run_single_test(
     n_vl=args.n_vl,
     pack_a=args.pack_a,
     pack_b=args.pack_b,
+    profile_pack=args.profile_pack,
     verbose=True
 )
 
