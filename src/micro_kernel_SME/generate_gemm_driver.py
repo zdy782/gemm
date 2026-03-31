@@ -22,6 +22,13 @@ def gen_driver_kernel_call(kernel_func_name, a_ptr, b_ptr, c_ptr, lda_name, ldb_
     )
 
 
+def gen_pack_decl(cname: str, input_type: str) -> str:
+    return (
+        f'extern "C" void {cname}(int k, int n, const {input_type} *src, '
+        f"int ldsrc, {input_type} *dst);\n"
+    )
+
+
 def generate_gemm_driver(
     spec,
     kernel_func_name: str,
@@ -30,6 +37,7 @@ def generate_gemm_driver(
     get_profile_name: str,
 ) -> str:
     input_type, output_type, input_include = precision_types(spec)
+    use_external_half_pack = spec.is_ext_precision()
 
     prefix = spec.gemm_prefix()
     incopy_name = f"{prefix}_incopy"
@@ -115,8 +123,10 @@ def generate_gemm_driver(
 
     code = f"""
 #include <stdint.h>
-#include <time.h>
 #include <arm_sve.h>
+#if defined(__STDC_HOSTED__) && __STDC_HOSTED__
+#include <time.h>
+#endif
 {input_include}
 
 extern "C" int {kernel_func_name}(const long M, const long N, const long K, const {input_type} *A, const {input_type} *B, {output_type} *C, const long lda, const long ldb, const long ldc);
@@ -134,9 +144,13 @@ struct AutoGemmProfile {{
 static AutoGemmProfile autogemm_profile = {{0.0, 0.0, 0.0, 0.0, 0ULL, 0ULL, 0ULL}};
 
 static inline uint64_t autogemm_now_ns() {{
+#if defined(__STDC_HOSTED__) && __STDC_HOSTED__
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + static_cast<uint64_t>(ts.tv_nsec);
+#else
+    return 0ULL;
+#endif
 }}
 
 static inline double autogemm_elapsed_ms(uint64_t start_ns, uint64_t end_ns) {{
@@ -165,12 +179,18 @@ alignas(64) static {input_type} B_pack[{b_workspace}];
 static constexpr int AUTOGEMM_COPY_UNROLL_M = {spec.tile.m_vl};
 static constexpr int AUTOGEMM_COPY_UNROLL_N = {spec.tile.n_vl};
 """
-    if a_needs_pack:
-        code += generate_gemm_ncopy(incopy_name, input_type, "IN")
-        code += generate_gemm_tcopy(itcopy_name, input_type, "IT")
-    if b_needs_pack:
-        code += generate_gemm_ncopy(oncopy_name, input_type, "ON")
-        code += generate_gemm_tcopy(otcopy_name, input_type, "OT")
+    if use_external_half_pack:
+        if a_needs_pack:
+            code += gen_pack_decl(itcopy_name if spec.transA == "N" else incopy_name, input_type)
+        if b_needs_pack:
+            code += gen_pack_decl(oncopy_name if spec.transB == "N" else otcopy_name, input_type)
+    else:
+        if a_needs_pack:
+            code += generate_gemm_ncopy(incopy_name, input_type, "IN")
+            code += generate_gemm_tcopy(itcopy_name, input_type, "IT")
+        if b_needs_pack:
+            code += generate_gemm_ncopy(oncopy_name, input_type, "ON")
+            code += generate_gemm_tcopy(otcopy_name, input_type, "OT")
 
     code += f"""
 extern "C" int {driver_func_name}(const long M, const long N, const long K, const {input_type} *A, const {input_type} *B, {output_type} *C, const long lda, const long ldb, const long ldc)
