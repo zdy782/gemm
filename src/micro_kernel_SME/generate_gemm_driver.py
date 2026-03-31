@@ -45,10 +45,11 @@ def generate_gemm_driver(
     oncopy_name = f"{prefix}_oncopy"
     otcopy_name = f"{prefix}_otcopy"
 
-    a_workspace = GEMM_P * GEMM_Q
+    a_workspace = spec.M * GEMM_Q if spec.pack_a else GEMM_P * GEMM_Q
     b_workspace = GEMM_Q * GEMM_R
     a_needs_pack = spec.pack_a
     b_needs_pack = spec.pack_b
+    max_a_panels = (spec.M + GEMM_P - 1) // GEMM_P if spec.pack_a else 0
 
     if spec.transA == "N":
         a_pack_call = f"{itcopy_name}(minL, minI, A + is + ls * lda, lda, A_pack);"
@@ -103,23 +104,49 @@ def generate_gemm_driver(
     else:
         b_copy_code = b_direct_stmt
 
-    if a_needs_pack:
-        a_copy_code = (
-            "const uint64_t a_pack_start_ns = autogemm_now_ns();\n"
-            f"                {a_pack_call}\n"
-            "                autogemm_profile.a_pack_ms += autogemm_elapsed_ms(a_pack_start_ns, autogemm_now_ns());\n"
-            "                ++autogemm_profile.a_pack_calls;\n"
-            f"                {a_pack_after}"
-        )
-    else:
-        a_copy_code = a_direct_stmt
-
     kernel_call_code = (
         "const uint64_t kernel_start_ns = autogemm_now_ns();\n"
         f"                {gen_driver_kernel_call(kernel_func_name, 'sa', 'sb', 'C + is + js * ldc', 'lda_kernel', 'ldb_kernel', 'ldc')}\n"
         "                autogemm_profile.kernel_ms += autogemm_elapsed_ms(kernel_start_ns, autogemm_now_ns());\n"
         "                ++autogemm_profile.kernel_calls;\n"
     )
+
+    if a_needs_pack:
+        a_prepack_code = (
+            "long a_panel_count = 0;\n"
+            "        long a_panel_cursor = 0;\n"
+            "        for (long is = 0; is < M; ) {\n"
+            "            long minI = M - is;\n"
+            f"            if (minI > {GEMM_P}) {{\n"
+            f"                minI = {GEMM_P};\n"
+            "            }\n"
+            "            const uint64_t a_pack_start_ns = autogemm_now_ns();\n"
+            f"            {a_pack_call.replace('A_pack', 'A_pack + a_panel_cursor')}\n"
+            "            autogemm_profile.a_pack_ms += autogemm_elapsed_ms(a_pack_start_ns, autogemm_now_ns());\n"
+            "            ++autogemm_profile.a_pack_calls;\n"
+            "            a_panel_offsets[a_panel_count] = a_panel_cursor;\n"
+            "            a_panel_sizes[a_panel_count] = minI;\n"
+            "            ++a_panel_count;\n"
+            "            a_panel_cursor += minI * minL;\n"
+            "            is += minI;\n"
+            "        }\n"
+        )
+        a_reuse_code = (
+            "long a_panel_index = 0;\n"
+            "            for (long is = 0; is < M; ) {\n"
+            "                long minI = M - is;\n"
+            f"                if (minI > {GEMM_P}) {{\n"
+            f"                    minI = {GEMM_P};\n"
+            "                }\n"
+            "                sa = A_pack + a_panel_offsets[a_panel_index];\n"
+            "                lda_kernel = a_panel_sizes[a_panel_index];\n"
+            "                ++a_panel_index;\n"
+            f"                {kernel_call_code}"
+            "                is += minI;\n"
+            "            }\n"
+        )
+    else:
+        a_copy_code = a_direct_stmt
 
     code = f"""
 #include <stdint.h>
@@ -169,6 +196,8 @@ extern "C" const AutoGemmProfile* {get_profile_name}() {{
     if a_needs_pack:
         code += f"""
 alignas(64) static {input_type} A_pack[{a_workspace}];
+static long a_panel_offsets[{max_a_panels}];
+static long a_panel_sizes[{max_a_panels}];
 """
     if b_needs_pack:
         code += f"""
@@ -201,6 +230,29 @@ extern "C" int {driver_func_name}(const long M, const long N, const long K, cons
     long lda_kernel = 0;
     long ldb_kernel = 0;
 
+"""
+    if a_needs_pack:
+        code += f"""
+    for (long ls = 0; ls < K; ) {{
+        long minL = K - ls;
+        if (minL > {GEMM_Q}) {{
+            minL = {GEMM_Q};
+        }}
+        {a_prepack_code}
+        for (long js = 0; js < N; ) {{
+            long minJ = N - js;
+            if (minJ > {GEMM_R}) {{
+                minJ = {GEMM_R};
+            }}
+            {b_copy_code}
+            {a_reuse_code}
+            js += minJ;
+        }}
+        ls += minL;
+    }}
+"""
+    else:
+        code += f"""
     for (long js = 0; js < N; ) {{
         long minJ = N - js;
         if (minJ > {GEMM_R}) {{
@@ -225,6 +277,8 @@ extern "C" int {driver_func_name}(const long M, const long N, const long K, cons
         }}
         js += minJ;
     }}
+"""
+    code += f"""
     autogemm_profile.total_ms += autogemm_elapsed_ms(total_start_ns, autogemm_now_ns());
     return 0;
 }}
