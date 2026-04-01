@@ -201,58 +201,21 @@ def _gen_non_ext_contiguous(load_inst, ctx, base, role, dst, lane):
     return f"{load_inst}      {dst}{suffix}, {pred}, [{base}, #{lane}, MUL VL]\n"
 
 
-def _gen_ext_gather_pair(ctx, base, role, index_vec, dst, low_tmp, high_tmp, pair_base, next_dst=None, next_role=None):
-    # Gather paths keep their older zip/uzp shaping, but they are no longer part of the small paired fast policy.
-    if next_dst is None:
-        code_str = f""
-        code_str += f"ld1h      {low_tmp}.s, {_ext_pred(ctx, role)}/z, [{base}, {index_vec}.s, UXTW]\n"
-        code_str += f"add       {pair_base}, {base}, #2\n"
-        code_str += f"ld1h      {high_tmp}.s, {_ext_pred(ctx, role)}/z, [{pair_base}, {index_vec}.s, UXTW]\n"
-        code_str += f"uzp1      {low_tmp}.h, {low_tmp}.h, {low_tmp}.h\n"
-        code_str += f"uzp1      {high_tmp}.h, {high_tmp}.h, {high_tmp}.h\n"
-        code_str += f"zip1      {dst}.h, {low_tmp}.h, {high_tmp}.h\n"
-        return code_str
+def _gen_ext_gather_pair(ctx, base, role, index_vec, dst, low_tmp, high_tmp, pair_base):
+    # Small gather paths only materialize one logical operand at a time, so they never need a temporary paired-load predicate.
     code_str = f""
-    pred_pre, pred = _paired_ext_load_predicate(ctx, role, next_role if next_dst is not None else None)
-    code_str += pred_pre
-    code_str += f"ld1h      {low_tmp}.s, {pred}/z, [{base}, {index_vec}.s, UXTW]\n"
+    code_str += f"ld1h      {low_tmp}.s, {_ext_pred(ctx, role)}/z, [{base}, {index_vec}.s, UXTW]\n"
     code_str += f"add       {pair_base}, {base}, #2\n"
-    code_str += f"ld1h      {high_tmp}.s, {pred}/z, [{pair_base}, {index_vec}.s, UXTW]\n"
-    if next_dst is not None:
-        code_str += f"uzp1      {low_tmp}.h, {low_tmp}.h, {low_tmp}.h\n"
-        code_str += f"uzp1      {high_tmp}.h, {high_tmp}.h, {high_tmp}.h\n"
-        code_str += f"uzp1      {dst}.h, {low_tmp}.h, {low_tmp}.h\n"
-        code_str += f"uzp2      {next_dst}.h, {low_tmp}.h, {low_tmp}.h\n"
-        code_str += f"uzp1      {low_tmp}.h, {high_tmp}.h, {high_tmp}.h\n"
-        code_str += f"uzp2      {high_tmp}.h, {high_tmp}.h, {high_tmp}.h\n"
-        code_str += f"zip1      {dst}.h, {dst}.h, {low_tmp}.h\n"
-        code_str += f"zip1      {next_dst}.h, {next_dst}.h, {high_tmp}.h\n"
-        return code_str
+    code_str += f"ld1h      {high_tmp}.s, {_ext_pred(ctx, role)}/z, [{pair_base}, {index_vec}.s, UXTW]\n"
     code_str += f"uzp1      {low_tmp}.h, {low_tmp}.h, {low_tmp}.h\n"
     code_str += f"uzp1      {high_tmp}.h, {high_tmp}.h, {high_tmp}.h\n"
     code_str += f"zip1      {dst}.h, {low_tmp}.h, {high_tmp}.h\n"
     return code_str
 
 
-def _gen_ext_gather_last_k(ctx, base, role, index_vec, dst, low_tmp, zero_tmp, next_dst=None, next_role=None):
-    # Gather last-k is the conservative zero-extended version of the gather loader above.
-    if next_dst is None:
-        return f"ld1h      {dst}.s, {_ext_pred(ctx, role)}/z, [{base}, {index_vec}.s, UXTW]\n"
-    code_str = f""
-    pred_pre, pred = _paired_ext_load_predicate(ctx, role, next_role if next_dst is not None else None)
-    code_str += pred_pre
-    code_str += f"ld1h      {low_tmp}.s, {pred}/z, [{base}, {index_vec}.s, UXTW]\n"
-    code_str += f"mov       {zero_tmp}.h, #0\n"
-    if next_dst is not None:
-        code_str += f"uzp1      {low_tmp}.h, {low_tmp}.h, {low_tmp}.h\n"
-        code_str += f"uzp1      {dst}.h, {low_tmp}.h, {low_tmp}.h\n"
-        code_str += f"uzp2      {next_dst}.h, {low_tmp}.h, {low_tmp}.h\n"
-        code_str += f"zip1      {dst}.h, {dst}.h, {zero_tmp}.h\n"
-        code_str += f"zip1      {next_dst}.h, {next_dst}.h, {zero_tmp}.h\n"
-        return code_str
-    code_str += f"uzp1      {low_tmp}.h, {low_tmp}.h, {low_tmp}.h\n"
-    code_str += f"zip1      {dst}.h, {low_tmp}.h, {zero_tmp}.h\n"
-    return code_str
+def _gen_ext_gather_last_k(ctx, base, role, index_vec, dst, low_tmp, zero_tmp):
+    # Small gather last-k stays single-output as well; the missing high half is synthesized from zero without any paired predicate.
+    return f"ld1h      {dst}.s, {_ext_pred(ctx, role)}/z, [{base}, {index_vec}.s, UXTW]\n"
 
 
 def _gen_non_ext_gather(load_inst, ctx, base, role, index_vec, dst):
