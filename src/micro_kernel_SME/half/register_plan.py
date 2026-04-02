@@ -217,8 +217,11 @@ class VectorRegisters:
     b_contiguous_low: str = "z27"
     save_tmp: str = "z25"
     save_tmp1: str = "z26"
-    save_alpha: str = "z27"
-    save_beta: str = "z28"
+    # Save-side alpha/beta broadcasts must not reuse persistent loop-state
+    # vectors such as b_index/a_index, because the outer loops may continue
+    # after one save and expect those vectors to stay valid.
+    save_alpha: str = "z18"
+    save_beta: str = "z19"
 
 
 @dataclass(frozen=True)

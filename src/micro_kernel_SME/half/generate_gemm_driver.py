@@ -99,8 +99,9 @@ def generate_gemm_driver(
         b_copy_code = b_direct_stmt
 
     kernel_call_code = (
+        "const float effective_beta = (ls == 0) ? beta : 1.0f;\n"
         "const uint64_t kernel_start_ns = autogemm_now_ns();\n"
-        f"                {gen_driver_kernel_call(kernel_func_name, 'alpha', 'sa', 'sb', 'beta', 'C + is + js * ldc', 'lda_kernel', 'ldb_kernel', 'ldc')}\n"
+        f"                {gen_driver_kernel_call(kernel_func_name, 'alpha', 'sa', 'sb', 'effective_beta', 'C + is + js * ldc', 'lda_kernel', 'ldb_kernel', 'ldc')}\n"
         "                autogemm_profile.kernel_ms += autogemm_elapsed_ms(kernel_start_ns, autogemm_now_ns());\n"
         "                ++autogemm_profile.kernel_calls;\n"
     )
