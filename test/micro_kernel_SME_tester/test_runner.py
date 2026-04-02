@@ -73,6 +73,32 @@ def _extract_failure_line(output: Optional[str]) -> Optional[str]:
     return None
 
 
+def _extract_last_case_marker(output: Optional[str]) -> Optional[str]:
+    if not output:
+        return None
+    last_marker = None
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if line.startswith("__AUTOGEMM_CASE__ "):
+            last_marker = line[len("__AUTOGEMM_CASE__ "):]
+    return last_marker
+
+
+def _strip_internal_markers(output: Optional[str]) -> str:
+    if not output:
+        return ""
+    cleaned_lines = []
+    for raw_line in output.splitlines():
+        line = raw_line.rstrip("\n")
+        stripped = line.strip()
+        if stripped.startswith("__AUTOGEMM_CASE__ "):
+            continue
+        if stripped.startswith("__AUTOGEMM_PROGRESS__ "):
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines)
+
+
 def setup_environment():
     """Set up Python import paths."""
     current_path = os.path.dirname(os.path.abspath(__file__))
@@ -231,9 +257,17 @@ def run_single_test(
             encoding="utf-8",
         )
         if verbose and run_result.stdout:
-            print(f"[RUN OUTPUT]\n{run_result.stdout}")
+            cleaned_output = _strip_internal_markers(run_result.stdout)
+            if cleaned_output:
+                print(f"[RUN OUTPUT]\n{cleaned_output}")
         if run_result.returncode != 0 or "ERROR" in run_result.stdout.upper():
-            run_failure = _extract_failure_line(run_result.stdout) or f"Execution failed for M={M}, N={N}, K={K}"
+            run_failure = _extract_failure_line(run_result.stdout)
+            if run_failure is None:
+                last_case = _extract_last_case_marker(run_result.stdout)
+                if last_case is not None:
+                    run_failure = f"ERROR: {last_case} (kernel exited before diff output)"
+            if run_failure is None:
+                run_failure = f"Execution failed for M={M}, N={N}, K={K}"
             _set_last_failure_detail("run", run_failure)
             if verbose:
                 print(f"[ERROR] Execution failed for M={M}, N={N}, K={K}")
@@ -482,13 +516,20 @@ def run_range_test(
             progress.close()
             if run_proc.returncode != 0:
                 if non_progress_lines:
-                    print("[RUN OUTPUT]")
-                    print("\n".join(non_progress_lines))
+                    cleaned_output = _strip_internal_markers("\n".join(non_progress_lines))
+                    if cleaned_output:
+                        print("[RUN OUTPUT]")
+                        print(cleaned_output)
                 if verbose:
                     print(f"[ERROR] Execution failed for M={M_range}, N={N_range}, K={K_range}")
-                run_failure = _extract_failure_line("\n".join(non_progress_lines)) or (
-                    f"Execution failed for M={M_range}, N={N_range}, K={K_range}"
-                )
+                captured_output = "\n".join(non_progress_lines)
+                run_failure = _extract_failure_line(captured_output)
+                if run_failure is None:
+                    last_case = _extract_last_case_marker(captured_output)
+                    if last_case is not None:
+                        run_failure = f"ERROR: {last_case} (kernel exited before diff output)"
+                if run_failure is None:
+                    run_failure = f"Execution failed for M={M_range}, N={N_range}, K={K_range}"
                 _set_last_failure_detail("run", run_failure)
                 print(f"[ERROR DETAIL] {run_failure}")
                 return False
@@ -502,12 +543,18 @@ def run_range_test(
             encoding="utf-8",
         )
         if verbose and run_result.stdout:
-            print(f"[RUN OUTPUT]\n{run_result.stdout}")
+            cleaned_output = _strip_internal_markers(run_result.stdout)
+            if cleaned_output:
+                print(f"[RUN OUTPUT]\n{cleaned_output}")
         if run_result.returncode != 0:
             run_output = getattr(run_result, "stdout", "")
-            run_failure = _extract_failure_line(run_output) or (
-                f"Execution failed for M={M_range}, N={N_range}, K={K_range}"
-            )
+            run_failure = _extract_failure_line(run_output)
+            if run_failure is None:
+                last_case = _extract_last_case_marker(run_output)
+                if last_case is not None:
+                    run_failure = f"ERROR: {last_case} (kernel exited before diff output)"
+            if run_failure is None:
+                run_failure = f"Execution failed for M={M_range}, N={N_range}, K={K_range}"
             _set_last_failure_detail("run", run_failure)
             if verbose:
                 print(f"[ERROR] Execution failed for M={M_range}, N={N_range}, K={K_range}")

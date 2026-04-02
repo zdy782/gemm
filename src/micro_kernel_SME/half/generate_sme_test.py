@@ -541,6 +541,7 @@ int main()
                     }}
                     printf("ERROR: invalid stride for M=%d, N=%d, K=%d, lda=%d (< %d), ldb=%d (< %d), ldc=%d (< %d)\\n",
                         M, N, K, lda, lda_required, ldb, ldb_required, ldc, ldc_required);
+                    fflush(stdout);
                     free(A);
                     free(B);
                     free(C);
@@ -564,6 +565,9 @@ int main()
 
                 bool case_passed = true;
                 for (const ScaleCase& scale_case : scale_cases) {{
+                    printf("__AUTOGEMM_CASE__ M=%d N=%d K=%d lda=%d ldb=%d ldc=%d alpha=%.6f beta=%.6f\\n",
+                        M, N, K, lda, ldb, ldc, scale_case.alpha, scale_case.beta);
+                    fflush(stdout);
                     test_utils::init(C, c_size);
                     memcpy(refC, C, c_size * sizeof({output_type}));
                     memcpy(ourC, C, c_size * sizeof({output_type}));
@@ -580,6 +584,7 @@ int main()
                         }}
                         printf("ERROR: M=%d, N=%d, K=%d, lda=%d, ldb=%d, ldc=%d, alpha=%.6f, beta=%.6f, ref[%d]=%.6f, our[%d]=%.6f\\n",
                             M, N, K, lda, ldb, ldc, scale_case.alpha, scale_case.beta, idx, refC[idx], idx, ourC[idx]);
+                        fflush(stdout);
                         test_utils::print_diff(refC, ourC, M, N, ldc);
                         free(A);
                         free(B);
