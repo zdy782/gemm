@@ -142,6 +142,7 @@ def generate_sme_test_cpp(
     pack_a: bool = False,
     pack_b: bool = False,
     profile_pack: bool = False,
+    validate_results: bool = True,
 ):
     """Generate C++ test file for SME GEMM kernel
 
@@ -258,6 +259,7 @@ int main()
     {output_type} *refC = static_cast<{output_type}*>(_mm_malloc(64, {c_size} * sizeof({output_type})));
     {output_type} *ourC = static_cast<{output_type}*>(_mm_malloc(64, {c_size} * sizeof({output_type})));
     bool all_passed = true;
+    const bool validate_results = {"true" if validate_results else "false"};
     const float alpha_bench = 1.0f;
     const float beta_bench = 1.0f;
 
@@ -317,6 +319,21 @@ int main()
         profile->kernel_ms * inv_total_pct);
 """
     cc_code += f"""
+    if (!validate_results) {{
+        printf("PERF_ONLY\\n");
+        free(A);
+        A=NULL;
+        free(B);
+        B=NULL;
+        free(C);
+        C=NULL;
+        free(refC);
+        refC=NULL;
+        free(ourC);
+        ourC=NULL;
+        return 0;
+    }}
+
     for (const ScaleCase& scale_case : scale_cases) {{
         test_utils::init(C, {c_size});
         memcpy(refC, C, {c_size} * sizeof({output_type}));

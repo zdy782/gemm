@@ -138,6 +138,7 @@ def run_test_case(case: Dict, m_vl: int, n_vl: int, data_type: str, pack_a: bool
         kernel_cmd_parts.append("--pack_a")
     if pack_b:
         kernel_cmd_parts.append("--pack_b")
+    kernel_cmd_parts.append("--perf_only")
     kernel_cmd = " ".join(kernel_cmd_parts)
 
     try:
