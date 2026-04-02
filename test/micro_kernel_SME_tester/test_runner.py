@@ -212,10 +212,11 @@ def run_single_test(
         if verbose and compile_result.stdout:
             print(f"[COMPILE OUTPUT]\n{compile_result.stdout}")
         if compile_result.returncode != 0 or "ERROR" in compile_result.stdout.upper():
-            if verbose:
-                print(f"[ERROR] Compilation failed for M={M}, N={N}, K={K}")
             compile_failure = _extract_failure_line(compile_result.stdout) or f"Compilation failed for M={M}, N={N}, K={K}"
             _set_last_failure_detail("compile", compile_failure)
+            if verbose:
+                print(f"[ERROR] Compilation failed for M={M}, N={N}, K={K}")
+                print(f"[ERROR DETAIL] {compile_failure}")
             return False
 
         if verbose:
@@ -232,10 +233,11 @@ def run_single_test(
         if verbose and run_result.stdout:
             print(f"[RUN OUTPUT]\n{run_result.stdout}")
         if run_result.returncode != 0 or "ERROR" in run_result.stdout.upper():
-            if verbose:
-                print(f"[ERROR] Execution failed for M={M}, N={N}, K={K}")
             run_failure = _extract_failure_line(run_result.stdout) or f"Execution failed for M={M}, N={N}, K={K}"
             _set_last_failure_detail("run", run_failure)
+            if verbose:
+                print(f"[ERROR] Execution failed for M={M}, N={N}, K={K}")
+                print(f"[ERROR DETAIL] {run_failure}")
             return False
 
         return True
@@ -435,13 +437,14 @@ def run_range_test(
                 encoding="utf-8",
             )
         if compile_result.returncode != 0:
-            if verbose:
-                print(f"[ERROR] Compilation failed for M={M_range}, N={N_range}, K={K_range}")
             compile_output = getattr(compile_result, "stdout", "")
             compile_failure = _extract_failure_line(compile_output) or (
                 f"Compilation failed for M={M_range}, N={N_range}, K={K_range}"
             )
             _set_last_failure_detail("compile", compile_failure)
+            if verbose:
+                print(f"[ERROR] Compilation failed for M={M_range}, N={N_range}, K={K_range}")
+                print(f"[ERROR DETAIL] {compile_failure}")
             return False
 
         if verbose:
@@ -493,6 +496,7 @@ def run_range_test(
                     f"Execution failed for M={M_range}, N={N_range}, K={K_range}"
                 )
                 _set_last_failure_detail("run", run_failure)
+                print(f"[ERROR DETAIL] {run_failure}")
                 return False
             return True
         if verbose:
@@ -512,13 +516,14 @@ def run_range_test(
                 encoding="utf-8",
             )
         if run_result.returncode != 0:
-            if verbose:
-                print(f"[ERROR] Execution failed for M={M_range}, N={N_range}, K={K_range}")
             run_output = getattr(run_result, "stdout", "")
             run_failure = _extract_failure_line(run_output) or (
                 f"Execution failed for M={M_range}, N={N_range}, K={K_range}"
             )
             _set_last_failure_detail("run", run_failure)
+            if verbose:
+                print(f"[ERROR] Execution failed for M={M_range}, N={N_range}, K={K_range}")
+                print(f"[ERROR DETAIL] {run_failure}")
             return False
 
         return True
