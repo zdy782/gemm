@@ -7,7 +7,6 @@ from typing import Any
 # this object instead of carrying ad-hoc argument lists.
 
 class Precision(str, Enum):
-    FP32 = "fp32"
     BF16 = "bf16"
     FP16 = "fp16"
 
@@ -90,24 +89,16 @@ class KernelSpec:
     def transB(self) -> str:
         return self.trans_b.value
 
-    def is_fp32(self) -> bool:
-        return self.precision is Precision.FP32
-
     def is_bf16(self) -> bool:
         return self.precision is Precision.BF16
 
     def is_fp16(self) -> bool:
         return self.precision is Precision.FP16
 
-    def is_ext_precision(self) -> bool:
-        return self.precision in (Precision.BF16, Precision.FP16)
-
     def gemm_prefix(self) -> str:
         if self.is_bf16():
             return "sbgemm"
-        if self.is_fp16():
-            return "shgemm"
-        return "sgemm"
+        return "shgemm"
 
     def pack_suffix(self) -> str:
         if self.pack_a and self.pack_b:
@@ -146,19 +137,13 @@ class GenerationContext:
     # - `registers`: which architectural names each layer should use
     # - `model`: how A/B are loaded for the selected transpose family
 
-    def is_fp32(self) -> bool:
-        return self.spec.is_fp32()
-
     def is_bf16(self) -> bool:
         return self.spec.is_bf16()
 
     def is_fp16(self) -> bool:
         return self.spec.is_fp16()
 
-    def is_ext_precision(self) -> bool:
-        return self.spec.is_ext_precision()
-
-    def use_ext_paired_fast_path(self) -> bool:
-        # The unified zip1+zip2 path is only meaningful for small ext-precision
-        # kernels. `fp32` and `general` keep their own loading strategy.
-        return self.spec.gemm_type is GemmType.SMALL and self.spec.is_ext_precision()
+    def use_paired_half_loads(self) -> bool:
+        # Only small kernels collapse neighboring half-width lanes into paired
+        # zip1+zip2 loads. `general` keeps its simpler per-lane schedule.
+        return self.spec.gemm_type is GemmType.SMALL

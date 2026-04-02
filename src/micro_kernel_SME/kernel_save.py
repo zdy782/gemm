@@ -3,13 +3,14 @@ from kernel_asm import save_zacol
 
 
 def get_pg0(ctx):
-    # Use the main-row predicate as the default save predicate for every fully covered subtile slice.
-    return ctx.registers.ext_predicate("m_main") if ctx.is_ext_precision() else ctx.registers.logical_predicate("m_main")
+    # Save uses the half-input row predicates even though ZA/C traffic stays in
+    # `.s` because accumulation/output is float.
+    return ctx.registers.half_predicate("m_main")
 
 
 def get_pg1(ctx):
-    # Use the tail-row predicate for the final partial subtile slice when the save height is not full.
-    return ctx.registers.ext_predicate("m_tail") if ctx.is_ext_precision() else ctx.registers.logical_predicate("m_tail")
+    # Tail saves keep the same rule: half-input predicate, float ZA/C vectors.
+    return ctx.registers.half_predicate("m_tail")
 
 
 def _vl_multiplier(vl_label):

@@ -26,11 +26,10 @@ def laf_asm_code(ctx, func_name):
     code_str += START_SME_FEATURE(regs)
     code_str += f"mov     {regs.pointers.pBt}, {regs.params.origPB}\n"
     code_str += f"mov     {regs.counters.counterJ}, #0\n"
-    if ctx.is_ext_precision():
-        code_str += f"ptrue   {regs.predicates.n_main}.h, all\n"
-        code_str += f"pfalse  {regs.predicates.false_all}.b\n"
-    else:
-        code_str += f"ptrue   {regs.predicates.n_main}.s, all\n"
+    # Half inputs always start from a full-width `.h` predicate. The `.b`
+    # false predicate is still useful for later mixed-width control flow.
+    code_str += f"ptrue   {regs.predicates.n_main}.h, all\n"
+    code_str += f"pfalse  {regs.predicates.false_all}.b\n"
     # `set_svindex()` is model-specific. Small gather paths need prebuilt index
     # vectors; contiguous models return an empty string here.
     code_str += ctx.model.set_svindex(ctx)

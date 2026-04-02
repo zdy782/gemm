@@ -29,7 +29,7 @@ def test_cpp_types(spec: KernelSpec):
         return "__bf16", "float", "#include <arm_bf16.h>", "__BGEMM_KERNEL_H", get_tolerance_value(spec)
     if spec.is_fp16():
         return "__fp16", "float", "", "__HGEMM_KERNEL_H", get_tolerance_value(spec)
-    return "float", "float", "", "__SGEMM_KERNEL_H", get_tolerance_value(spec)
+    raise ValueError(f"Unsupported precision: {spec.data_type}")
 
 
 def test_cpp_prelude(guard_name: str, input_type_include: str) -> str:
@@ -61,7 +61,7 @@ def generate_sme_asm(
     transA: str,
     transB: str,
     uniq_id: str,
-    data_type: str = "fp32",
+    data_type: str = "bf16",
     m_vl: int = 1,
     n_vl: int = 4,
     pack_a: bool = False,
@@ -80,7 +80,7 @@ def generate_sme_asm(
         transA (str): transA, "N" or "T"
         transB (str): transB, "N" or "T"
         uniq_id (str): a random 8 chars id to identify the kernel
-        data_type (str): data type, "fp32", "bf16", or "fp16"
+        data_type (str): data type, "bf16" or "fp16"
         m_vl (int): M tile size in units of s-precision VL
         n_vl (int): N tile size in units of s-precision VL
 
@@ -136,7 +136,7 @@ def generate_sme_test_cpp(
     transB: str,
     uniq_id: str,
     repeat: int,
-    data_type: str = "fp32",
+    data_type: str = "bf16",
     m_vl: int = 1,
     n_vl: int = 4,
     pack_a: bool = False,
@@ -157,7 +157,7 @@ def generate_sme_test_cpp(
         transB (str): transB, "N" or "T"
         uniq_id (str): a random 8 chars id to identify the kernel
         repeat (int): number of repetitions for performance test
-        data_type (str): data type, "fp32", "bf16", or "fp16"
+        data_type (str): data type, "bf16" or "fp16"
         m_vl (int): M tile size in units of s-precision VL
         n_vl (int): N tile size in units of s-precision VL
 
@@ -384,7 +384,7 @@ def generate_sme_range_test_cpp(
     transB: str,
     uniq_id: str,
     repeat: int,
-    data_type: str = "fp32",
+    data_type: str = "bf16",
     m_vl: int = 1,
     n_vl: int = 4,
     pack_a: bool = False,
@@ -630,7 +630,7 @@ def generate_sme_driver_cpp(
     transA: str,
     transB: str,
     uniq_id: str,
-    data_type: str = "fp32",
+    data_type: str = "bf16",
     m_vl: int = 1,
     n_vl: int = 4,
     pack_a: bool = False,

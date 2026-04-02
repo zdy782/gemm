@@ -2,13 +2,11 @@ S_ELEMENTS_PER_VL = 16
 H_ELEMENTS_PER_VL = 32
 MAX_TILE_AREA_VL = 4
 
-LD1 = "ld1w"
-LDNT1 = "ldnt1w"
 STNT1 = "stnt1w"
+LDNT1 = "ldnt1w"
 LD1_H = "ld1h"
 LDNT1_H = "ldnt1h"
 
-TOL = "1e-4"
 TOL_BF16 = "5e-3"
 TOL_FP16 = "1e-3"
 
@@ -60,40 +58,40 @@ def assert_valid_tile_combo(m_vl, n_vl):
         )
 
 
-def get_ld1(ctx):
-    return LD1_H if ctx.is_ext_precision() else LD1
+def get_half_load_inst():
+    return LD1_H
 
 
-def get_non_temporal_ld1(ctx):
-    return LDNT1_H if ctx.is_ext_precision() else LDNT1
+def get_half_non_temporal_load_inst():
+    return LDNT1_H
 
 
-def get_element_suffix(ctx):
-    return ".h" if ctx.is_ext_precision() else ".s"
+def get_half_input_suffix():
+    return ".h"
 
 
 def get_mopa_inst(ctx):
     return "bfmopa" if ctx.is_bf16() else "fmopa"
 
 
-def get_element_size_shift(ctx):
-    return 1 if ctx.is_ext_precision() else 2
+def get_half_input_size_shift():
+    return 1
 
 
-def get_whilelt_increment(ctx):
-    return get_h_elements_per_vl() if ctx.is_ext_precision() else get_s_elements_per_vl()
+def get_half_whilelt_increment():
+    return get_h_elements_per_vl()
 
 
-def get_k_step(ctx):
-    return 2 if ctx.is_ext_precision() else 1
+def get_half_k_step():
+    return 2
 
 
-def get_k_remainder_mask(ctx):
-    return 15 if ctx.is_ext_precision() else 7
+def get_half_k_remainder_mask():
+    return 15
 
 
-def get_k_loop_shift(ctx):
-    return 4 if ctx.is_ext_precision() else 3
+def get_half_k_loop_shift():
+    return 4
 
 
 def get_tolerance_value(spec):
@@ -101,7 +99,7 @@ def get_tolerance_value(spec):
         return TOL_BF16
     if spec.is_fp16():
         return TOL_FP16
-    return TOL
+    raise ValueError(f"Unsupported precision: {spec.data_type}")
 
 
 def PROLOGUE(real_name):

@@ -198,10 +198,10 @@ class PredicateRegisters:
     m_main: str = "p1"
     m_tail: str = "p2"
     n_tail: str = "p3"
-    ext_m_main: str = "p4"
-    ext_m_tail: str = "p5"
-    ext_n_main: str = "p6"
-    ext_n_tail: str = "p7"
+    half_m_main: str = "p4"
+    half_m_tail: str = "p5"
+    half_n_main: str = "p6"
+    half_n_tail: str = "p7"
     load_pair_tmp: str = "p14"
     false_all: str = "p15"
 
@@ -250,12 +250,12 @@ class RegisterPlan:
     def logical_predicate(self, role: str) -> str:
         return getattr(self.predicates, role)
 
-    def ext_predicate(self, role: str) -> str:
+    def half_predicate(self, role: str) -> str:
         mapping = {
-            "m_main": self.predicates.ext_m_main,
-            "m_tail": self.predicates.ext_m_tail,
-            "n_main": self.predicates.ext_n_main,
-            "n_tail": self.predicates.ext_n_tail,
+            "m_main": self.predicates.half_m_main,
+            "m_tail": self.predicates.half_m_tail,
+            "n_main": self.predicates.half_n_main,
+            "n_tail": self.predicates.half_n_tail,
         }
         return mapping[role]
 

@@ -1,9 +1,8 @@
 from pathlib import Path
 
 
-def generate_makefile(data_type="fp32"):
+def generate_makefile(data_type="bf16"):
     src_dir = Path(__file__).resolve().parent
-    extra_pack_src = None
     if data_type == "bf16":
         PRECISION_MACRO = "BF16"
         march_flags = "-march=armv9-a+sme+bf16"
@@ -13,8 +12,7 @@ def generate_makefile(data_type="fp32"):
         march_flags = "-march=armv9-a+sme"
         extra_pack_src = src_dir / "shgemm_half_pack.S"
     else:
-        PRECISION_MACRO = "FP32"
-        march_flags = "-march=armv9-a+sme"
+        raise ValueError(f"Unsupported data_type: {data_type}")
 
     code_str = ""
     code_str += f"CXX = clang++\n"
@@ -24,8 +22,7 @@ def generate_makefile(data_type="fp32"):
     code_str += f"all:\n"
     code_str += f"\t$(CC) $(ASFLAGS) -c kernel_asm.S -o kernel_asm.o\n"
     link_objects = "kernel_asm.o"
-    if extra_pack_src is not None:
-        code_str += f"\t$(CC) $(ASFLAGS) -c {extra_pack_src} -o half_pack.o\n"
-        link_objects += " half_pack.o"
+    code_str += f"\t$(CC) $(ASFLAGS) -c {extra_pack_src} -o half_pack.o\n"
+    link_objects += " half_pack.o"
     code_str += f"\t$(CXX) $(CFLAGS) test.cpp driver.cpp {link_objects} -o benchmark_kernel"
     return code_str

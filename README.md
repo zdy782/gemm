@@ -10,7 +10,6 @@ It is oriented to real SME-capable ARMv9 hardware. Local VM, container, or emula
 - Test drivers live under `test/micro_kernel_SME_tester/`.
 - The test flow generates `kernel_asm.S`, `test.cpp`, and a `Makefile`, then builds and runs the case with `clang` and `make`.
 - Supported data types in the current generator and test path:
-  - `fp32`
   - `bf16`
   - `fp16`
 
@@ -45,7 +44,7 @@ python test/micro_kernel_SME_tester/test_single.py \
   --M 16 --N 64 --K 16 \
   --gemm_type small \
   --transA N --transB N \
-  --data_type fp32
+  --data_type bf16
 ```
 
 Run the CSV batch suite:

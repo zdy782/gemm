@@ -1,16 +1,4 @@
 M,N,K,lda,ldb,ldc,gemm_type,transA,transB,REPEAT,data_type,m_vl,n_vl
-1:63:1,1:63:1,1:63:1,auto,auto,auto,small,N,N,1,fp32,1,4
-1:256:13,1:289:17,1:320:27,auto,auto,auto,small,N,T,1,fp32,1,4
-1:256:5,1:289:7,1:320:7,auto,auto,auto,small,T,N,1,fp32,1,4
-1:2560:523,1:2890:527,1:3200:537,auto,auto,auto,small,T,T,1,fp32,1,4
-1:63:1,1:63:1,1:63:1,auto,auto,auto,small,N,N,1,fp32,2,2
-1:256:13,1:289:17,1:320:27,auto,auto,auto,small,N,T,1,fp32,2,2
-1:256:5,1:289:7,1:320:7,auto,auto,auto,small,T,N,1,fp32,2,2
-1:2560:523,1:2890:527,1:3200:537,auto,auto,auto,small,T,T,1,fp32,2,2
-1:63:1,1:63:1,1:63:1,auto,auto,auto,small,N,N,1,fp32,4,1
-1:256:13,1:289:17,1:320:27,auto,auto,auto,small,N,T,1,fp32,4,1
-1:256:5,1:289:7,1:320:7,auto,auto,auto,small,T,N,1,fp32,4,1
-1:2560:523,1:2890:527,1:3200:537,auto,auto,auto,small,T,T,1,fp32,4,1
 1:63:1,1:63:1,1:63:1,auto,auto,auto,small,N,N,1,bf16,1,4
 1:256:13,1:289:17,1:320:27,auto,auto,auto,small,N,T,1,bf16,1,4
 1:256:5,1:289:7,1:320:7,auto,auto,auto,small,T,N,1,bf16,1,4

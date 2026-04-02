@@ -1,5 +1,5 @@
-from global_config import get_element_suffix, tile_size_from_vl
-from kernel_mm_loop_k import gen_ext_load_predicate_refresh, kernel_mm_loop_k
+from global_config import get_half_input_suffix, tile_size_from_vl
+from kernel_mm_loop_k import gen_half_load_predicate_refresh, kernel_mm_loop_k
 
 # L2 is the inner M loop that mirrors L1 by picking the widest legal `mvl` under the already chosen `nvl` chunk.
 
@@ -16,11 +16,10 @@ def _gen_m_count_init(ctx, m_size):
 
 
 def _gen_primary_m_predicate(ctx):
-    # Build the first M predicate for the candidate chunk, matching ext and non-ext predicate element widths.
+    # Seed the first half-input M predicate for a wide candidate chunk. The
+    # `.s/.h/.b` choices elsewhere in this file reflect logical tile coverage.
     regs = ctx.registers
-    if ctx.is_ext_precision():
-        return f"ptrue   {regs.predicates.m_main}.h, vl16\n"
-    return f"whilelt     {regs.predicates.m_main}.s, {regs.counters.TMP_CNT}, {regs.dims.MIN_M}\n"
+    return f"ptrue   {regs.predicates.m_main}.h, vl16\n"
 
 
 def _gen_m_fullness_dispatch(ctx, multiplier, nvl, label, n_fullness):
@@ -58,7 +57,7 @@ def _gen_m_loop_block(ctx, multiplier, nvl, label, n_fullness):
     regs = ctx.registers
     next_label = f".loop_m_{multiplier - 1}vl_{nvl}_{label}" if multiplier > 2 else f".loop_m_1vl_{nvl}_{label}"
     threshold = tile_size_from_vl(multiplier - 1)
-    pred_suffix = get_element_suffix(ctx)
+    pred_suffix = get_half_input_suffix()
     vl1 = tile_size_from_vl(1)
     code_str = f""
     code_str += f".loop_m_{multiplier}vl_{nvl}_{label}:\n"
@@ -70,7 +69,7 @@ def _gen_m_loop_block(ctx, multiplier, nvl, label, n_fullness):
         code_str += f"add      {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, #{vl1}\n"
     code_str += f"whilelt  {regs.predicates.m_tail}{pred_suffix}, {regs.counters.TMP_CNT}, {regs.dims.MIN_M}\n"
     code_str += f"add      {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, #{vl1}\n"
-    code_str += gen_ext_load_predicate_refresh(ctx, need_m_tail=True, need_n_tail=(nvl != "1VL"))
+    code_str += gen_half_load_predicate_refresh(ctx, need_m_tail=True, need_n_tail=(nvl != "1VL"))
     code_str += _gen_m_fullness_dispatch(ctx, multiplier, nvl, label, n_fullness)
     return code_str
 
@@ -125,9 +124,9 @@ def kernel_mm_loop_L2(ctx, m_size, label, nvl, n_fullness="single"):
 
     code_str += f".loop_m_1vl_{nvl}_{label}:\n"
     code_str += f"sub      {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}\n"
-    code_str += f"whilelt  {regs.predicates.m_main}{get_element_suffix(ctx)}, {regs.counters.TMP_CNT}, {regs.dims.MIN_M}\n"
+    code_str += f"whilelt  {regs.predicates.m_main}{get_half_input_suffix()}, {regs.counters.TMP_CNT}, {regs.dims.MIN_M}\n"
     code_str += f"add      {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, #{tile_size_from_vl(1)}\n"
-    code_str += gen_ext_load_predicate_refresh(ctx, need_m_tail=False, need_n_tail=(nvl != "1VL"))
+    code_str += gen_half_load_predicate_refresh(ctx, need_m_tail=False, need_n_tail=(nvl != "1VL"))
     code_str += _gen_m_fullness_dispatch(ctx, 1, nvl, label, n_fullness)
     code_str += f".end_of_loop_k_{nvl}_{label}:\n"
     code_str += f"add      {regs.counters.counterI}, {regs.counters.counterI}, {regs.dims.MIN_M}\n"
