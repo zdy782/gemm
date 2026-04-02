@@ -4,6 +4,7 @@ import random
 import string
 import shutil
 import subprocess
+from typing import Optional
 
 try:
     from tqdm.auto import tqdm
@@ -43,6 +44,35 @@ def _make_progress(*args, **kwargs):
     return tqdm(*args, **kwargs)
 
 
+_LAST_FAILURE_DETAIL = None
+
+
+def _set_last_failure_detail(stage: str, message: str):
+    global _LAST_FAILURE_DETAIL
+    _LAST_FAILURE_DETAIL = {"stage": stage, "message": message}
+
+
+def consume_last_failure_detail():
+    global _LAST_FAILURE_DETAIL
+    detail = _LAST_FAILURE_DETAIL
+    _LAST_FAILURE_DETAIL = None
+    return detail
+
+
+def _extract_failure_line(output: Optional[str]) -> Optional[str]:
+    if not output:
+        return None
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if line.startswith("ERROR:"):
+            return line
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if line:
+            return line
+    return None
+
+
 def setup_environment():
     """Set up Python import paths."""
     current_path = os.path.dirname(os.path.abspath(__file__))
@@ -74,6 +104,7 @@ def run_single_test(
     keep_tmp=False,
 ):
     """Run the full workflow for a single test case."""
+    _set_last_failure_detail("init", "No failure detail recorded")
     current_path = setup_environment()
 
     from micro_kernel_SME.half.generate_sme_test import (
@@ -100,6 +131,7 @@ def run_single_test(
         if not asm_code:
             if verbose:
                 print(f"[ERROR] Failed to generate asm code for M={M}, N={N}, K={K}")
+            _set_last_failure_detail("generate", f"Failed to generate asm code for M={M}, N={N}, K={K}")
             return False
 
         with open(os.path.join(test_path, "kernel_asm.S"), "w") as f:
@@ -128,6 +160,7 @@ def run_single_test(
         if not cpp_code:
             if verbose:
                 print(f"[ERROR] Failed to generate cpp code for M={M}, N={N}, K={K}")
+            _set_last_failure_detail("generate", f"Failed to generate cpp code for M={M}, N={N}, K={K}")
             return False
 
         with open(os.path.join(test_path, "test.cpp"), "w") as f:
@@ -139,6 +172,7 @@ def run_single_test(
         if not driver_code:
             if verbose:
                 print(f"[ERROR] Failed to generate driver code for M={M}, N={N}, K={K}")
+            _set_last_failure_detail("generate", f"Failed to generate driver code for M={M}, N={N}, K={K}")
             return False
         with open(os.path.join(test_path, "driver.cpp"), "w") as f:
             f.write(driver_code)
@@ -153,10 +187,12 @@ def run_single_test(
         if not os.path.exists(test_h_path):
             if verbose:
                 print(f"[ERROR] test.h not found: {test_h_path}")
+            _set_last_failure_detail("setup", f"test.h not found: {test_h_path}")
             return False
         if not os.path.exists(timer_h_path):
             if verbose:
                 print(f"[ERROR] timer.h not found: {timer_h_path}")
+            _set_last_failure_detail("setup", f"timer.h not found: {timer_h_path}")
             return False
 
         shutil.copy(test_h_path, test_path)
@@ -178,6 +214,8 @@ def run_single_test(
         if compile_result.returncode != 0 or "ERROR" in compile_result.stdout.upper():
             if verbose:
                 print(f"[ERROR] Compilation failed for M={M}, N={N}, K={K}")
+            compile_failure = _extract_failure_line(compile_result.stdout) or f"Compilation failed for M={M}, N={N}, K={K}"
+            _set_last_failure_detail("compile", compile_failure)
             return False
 
         if verbose:
@@ -196,6 +234,8 @@ def run_single_test(
         if run_result.returncode != 0 or "ERROR" in run_result.stdout.upper():
             if verbose:
                 print(f"[ERROR] Execution failed for M={M}, N={N}, K={K}")
+            run_failure = _extract_failure_line(run_result.stdout) or f"Execution failed for M={M}, N={N}, K={K}"
+            _set_last_failure_detail("run", run_failure)
             return False
 
         return True
@@ -203,6 +243,7 @@ def run_single_test(
     except Exception as e:
         if verbose:
             print(f"[ERROR] Exception occurred in test case M={M}, N={N}, K={K}: {e}")
+        _set_last_failure_detail("exception", f"Exception in test case M={M}, N={N}, K={K}: {e}")
         return False
 
     finally:
@@ -267,6 +308,7 @@ def run_range_test(
     show_inner_progress=False,
 ):
     """Run one ref-style range UT row in a single generated tester."""
+    _set_last_failure_detail("init", "No failure detail recorded")
     current_path = setup_environment()
 
     from micro_kernel_SME.half.generate_sme_test import (
@@ -303,6 +345,10 @@ def run_range_test(
         if not asm_code:
             if verbose:
                 print(f"[ERROR] Failed to generate asm code for M={M_range}, N={N_range}, K={K_range}")
+            _set_last_failure_detail(
+                "generate",
+                f"Failed to generate asm code for M={M_range}, N={N_range}, K={K_range}",
+            )
             return False
 
         with open(os.path.join(test_path, "kernel_asm.S"), "w") as f:
@@ -323,6 +369,10 @@ def run_range_test(
         if not cpp_code:
             if verbose:
                 print(f"[ERROR] Failed to generate range cpp code for M={M_range}, N={N_range}, K={K_range}")
+            _set_last_failure_detail(
+                "generate",
+                f"Failed to generate range cpp code for M={M_range}, N={N_range}, K={K_range}",
+            )
             return False
 
         with open(os.path.join(test_path, "test.cpp"), "w") as f:
@@ -335,6 +385,10 @@ def run_range_test(
         if not driver_code:
             if verbose:
                 print(f"[ERROR] Failed to generate driver code for M={M_range}, N={N_range}, K={K_range}")
+            _set_last_failure_detail(
+                "generate",
+                f"Failed to generate driver code for M={M_range}, N={N_range}, K={K_range}",
+            )
             return False
         with open(os.path.join(test_path, "driver.cpp"), "w") as f:
             f.write(driver_code)
@@ -349,10 +403,12 @@ def run_range_test(
         if not os.path.exists(test_h_path):
             if verbose:
                 print(f"[ERROR] test.h not found: {test_h_path}")
+            _set_last_failure_detail("setup", f"test.h not found: {test_h_path}")
             return False
         if not os.path.exists(timer_h_path):
             if verbose:
                 print(f"[ERROR] timer.h not found: {timer_h_path}")
+            _set_last_failure_detail("setup", f"timer.h not found: {timer_h_path}")
             return False
 
         shutil.copy(test_h_path, test_path)
@@ -381,6 +437,11 @@ def run_range_test(
         if compile_result.returncode != 0:
             if verbose:
                 print(f"[ERROR] Compilation failed for M={M_range}, N={N_range}, K={K_range}")
+            compile_output = getattr(compile_result, "stdout", "")
+            compile_failure = _extract_failure_line(compile_output) or (
+                f"Compilation failed for M={M_range}, N={N_range}, K={K_range}"
+            )
+            _set_last_failure_detail("compile", compile_failure)
             return False
 
         if verbose:
@@ -428,6 +489,10 @@ def run_range_test(
                     print("\n".join(non_progress_lines))
                 if verbose:
                     print(f"[ERROR] Execution failed for M={M_range}, N={N_range}, K={K_range}")
+                run_failure = _extract_failure_line("\n".join(non_progress_lines)) or (
+                    f"Execution failed for M={M_range}, N={N_range}, K={K_range}"
+                )
+                _set_last_failure_detail("run", run_failure)
                 return False
             return True
         if verbose:
@@ -449,6 +514,11 @@ def run_range_test(
         if run_result.returncode != 0:
             if verbose:
                 print(f"[ERROR] Execution failed for M={M_range}, N={N_range}, K={K_range}")
+            run_output = getattr(run_result, "stdout", "")
+            run_failure = _extract_failure_line(run_output) or (
+                f"Execution failed for M={M_range}, N={N_range}, K={K_range}"
+            )
+            _set_last_failure_detail("run", run_failure)
             return False
 
         return True
@@ -456,6 +526,7 @@ def run_range_test(
     except Exception as e:
         if verbose:
             print(f"[ERROR] Exception occurred in range test M={M_range}, N={N_range}, K={K_range}: {e}")
+        _set_last_failure_detail("exception", f"Exception in range test M={M_range}, N={N_range}, K={K_range}: {e}")
         return False
 
     finally:

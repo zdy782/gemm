@@ -3,7 +3,13 @@ import csv
 import argparse
 import sys
 
-from test_runner import pack_label, run_range_test, run_single_test, setup_environment
+from test_runner import (
+    consume_last_failure_detail,
+    pack_label,
+    run_range_test,
+    run_single_test,
+    setup_environment,
+)
 
 try:
     from tqdm.auto import tqdm
@@ -133,6 +139,7 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
                 passed += 1
                 _log("  [RESULT] PASS")
             else:
+                failure_detail = consume_last_failure_detail()
                 failed += 1
                 failed_cases.append({
                     "index": idx,
@@ -149,6 +156,8 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
                     "data_type": data_type,
                     "m_vl": m_vl,
                     "n_vl": n_vl,
+                    "failure_stage": (failure_detail or {}).get("stage"),
+                    "failure_message": (failure_detail or {}).get("message"),
                 })
                 _log("  [RESULT] FAIL")
         except Exception as e:
@@ -185,6 +194,10 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
                     f"  data_type={case['data_type']}, m_vl={case['m_vl']}, "
                     f"n_vl={case['n_vl']}"
                 )
+                if case.get("failure_stage"):
+                    _log(f"  Failure stage: {case['failure_stage']}")
+                if case.get("failure_message"):
+                    _log(f"  Failure detail: {case['failure_message']}")
         _log("-" * 80)
 
     return {
