@@ -66,10 +66,6 @@ def _extract_failure_line(output: Optional[str]) -> Optional[str]:
         line = raw_line.strip()
         if line.startswith("ERROR:"):
             return line
-    for raw_line in output.splitlines():
-        line = raw_line.strip()
-        if line:
-            return line
     return None
 
 
@@ -97,6 +93,22 @@ def _strip_internal_markers(output: Optional[str]) -> str:
             continue
         cleaned_lines.append(line)
     return "\n".join(cleaned_lines)
+
+
+def _format_process_exit_detail(returncode: int, output: Optional[str], context: str) -> str:
+    error_line = _extract_failure_line(output)
+    if error_line is not None:
+        return error_line
+
+    last_case = _extract_last_case_marker(output)
+    if returncode < 0:
+        exit_detail = f"signal={-returncode}"
+    else:
+        exit_detail = f"returncode={returncode}"
+
+    if last_case is not None:
+        return f"{context}; {exit_detail}; last_inner_case: {last_case}"
+    return f"{context}; {exit_detail}"
 
 
 def setup_environment():
@@ -261,13 +273,11 @@ def run_single_test(
             if cleaned_output:
                 print(f"[RUN OUTPUT]\n{cleaned_output}")
         if run_result.returncode != 0 or "ERROR" in run_result.stdout.upper():
-            run_failure = _extract_failure_line(run_result.stdout)
-            if run_failure is None:
-                last_case = _extract_last_case_marker(run_result.stdout)
-                if last_case is not None:
-                    run_failure = f"ERROR: {last_case} (kernel exited before diff output)"
-            if run_failure is None:
-                run_failure = f"Execution failed for M={M}, N={N}, K={K}"
+            run_failure = _format_process_exit_detail(
+                run_result.returncode,
+                run_result.stdout,
+                f"Execution failed for M={M}, N={N}, K={K}",
+            )
             _set_last_failure_detail("run", run_failure)
             if verbose:
                 print(f"[ERROR] Execution failed for M={M}, N={N}, K={K}")
@@ -523,13 +533,11 @@ def run_range_test(
                 if verbose:
                     print(f"[ERROR] Execution failed for M={M_range}, N={N_range}, K={K_range}")
                 captured_output = "\n".join(non_progress_lines)
-                run_failure = _extract_failure_line(captured_output)
-                if run_failure is None:
-                    last_case = _extract_last_case_marker(captured_output)
-                    if last_case is not None:
-                        run_failure = f"ERROR: {last_case} (kernel exited before diff output)"
-                if run_failure is None:
-                    run_failure = f"Execution failed for M={M_range}, N={N_range}, K={K_range}"
+                run_failure = _format_process_exit_detail(
+                    run_proc.returncode,
+                    captured_output,
+                    f"Execution failed for M={M_range}, N={N_range}, K={K_range}",
+                )
                 _set_last_failure_detail("run", run_failure)
                 print(f"[ERROR DETAIL] {run_failure}")
                 return False
@@ -548,13 +556,11 @@ def run_range_test(
                 print(f"[RUN OUTPUT]\n{cleaned_output}")
         if run_result.returncode != 0:
             run_output = getattr(run_result, "stdout", "")
-            run_failure = _extract_failure_line(run_output)
-            if run_failure is None:
-                last_case = _extract_last_case_marker(run_output)
-                if last_case is not None:
-                    run_failure = f"ERROR: {last_case} (kernel exited before diff output)"
-            if run_failure is None:
-                run_failure = f"Execution failed for M={M_range}, N={N_range}, K={K_range}"
+            run_failure = _format_process_exit_detail(
+                run_result.returncode,
+                run_output,
+                f"Execution failed for M={M_range}, N={N_range}, K={K_range}",
+            )
             _set_last_failure_detail("run", run_failure)
             if verbose:
                 print(f"[ERROR] Execution failed for M={M_range}, N={N_range}, K={K_range}")
