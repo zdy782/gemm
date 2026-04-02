@@ -458,11 +458,19 @@ def kernel_1VL_1VL_last_k(ctx, a0, a1, a2, a3, b0, b1, b2, b3, ldopt=None, ldaop
     return _gen_active_kernel(ctx, "1VL_1VL", True, pair_plan, a0, a1, a2, a3, b0, b1, b2, b3, ldopt, ldaopt)
 
 
-def save_zacol(pc, off, za, base_idx, idx, pg, rab0, rc0):
-    # Extract one ZA column slice, accumulate it with C, and stream the updated vector back to memory.
+def save_zacol(ctx, pc, off, za, base_idx, idx, pg, rab0, rc0, beta_zero=False):
+    # Extract one ZA column slice, apply alpha, optionally accumulate beta*C,
+    # and stream the updated vector back to memory.
+    alpha_vec = ctx.registers.vectors.save_alpha
+    beta_vec = ctx.registers.vectors.save_beta
     code_str = f""
     code_str += f"mova         {rab0}.s, {pg}/m, {za}v.s[{base_idx}, {idx}]\n"
+    code_str += f"fmul         {rab0}.s, {pg}/m, {rab0}.s, {alpha_vec}.s\n"
+    if beta_zero:
+        code_str += f"{STNT1}      {rab0}.s, {pg}, [{pc}, {off}, MUL VL]\n"
+        return code_str
     code_str += f"{LDNT1}      {rc0}.s, {pg}/z, [{pc}, {off}, MUL VL]\n"
+    code_str += f"fmul         {rc0}.s, {pg}/m, {rc0}.s, {beta_vec}.s\n"
     code_str += f"fadd         {rc0}.s, {pg}/m, {rc0}.s, {rab0}.s\n"
     code_str += f"{STNT1}      {rc0}.s, {pg}, [{pc}, {off}, MUL VL]\n"
     return code_str

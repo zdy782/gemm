@@ -204,7 +204,7 @@ def generate_sme_test_cpp(
 
     # extern declaration
     cc_code += f"""
-extern "C" int {entry_func_name}(const long M, const long N, const long K, const {input_type} *A, const {input_type} *B, {output_type} *C, const long lda, const long ldb, const long ldc);
+extern "C" int {entry_func_name}(const long M, const long N, const long K, const float alpha, const {input_type} *A, const {input_type} *B, const float beta, {output_type} *C, const long lda, const long ldb, const long ldc);
 """
     if profile_pack:
         cc_code += f"""
@@ -258,6 +258,20 @@ int main()
     {output_type} *refC = static_cast<{output_type}*>(_mm_malloc(64, {c_size} * sizeof({output_type})));
     {output_type} *ourC = static_cast<{output_type}*>(_mm_malloc(64, {c_size} * sizeof({output_type})));
     bool all_passed = true;
+    const float alpha_bench = 1.0f;
+    const float beta_bench = 1.0f;
+
+    struct ScaleCase {{
+        float alpha;
+        float beta;
+        const char* label;
+    }};
+    const ScaleCase scale_cases[] = {{
+        {{1.0f, 1.0f, "alpha=1,beta=1"}},
+        {{1.0f, 0.0f, "alpha=1,beta=0"}},
+        {{0.5f, 1.0f, "alpha=0.5,beta=1"}},
+        {{0.5f, 0.25f, "alpha=0.5,beta=0.25"}},
+    }};
 
     test_utils::init(A, {a_size});
     test_utils::init(B, {b_size});
@@ -267,7 +281,7 @@ int main()
     int n_loops =64;
 
     for (int i = 0; i < n_warming; ++i) {{
-        {entry_func_name}(M, N, K, A, B, C, lda, ldb, ldc);
+        {entry_func_name}(M, N, K, alpha_bench, A, B, beta_bench, C, lda, ldb, ldc);
     }}
 
 """
@@ -279,7 +293,7 @@ int main()
 
     Timer t;
     for (int i = 0; i < n_loops; ++i) {{
-        {entry_func_name}(M, N, K, A, B, C, lda, ldb, ldc);
+        {entry_func_name}(M, N, K, alpha_bench, A, B, beta_bench, C, lda, ldb, ldc);
     }}
 
     float latency = t.getTime();
@@ -303,47 +317,25 @@ int main()
         profile->kernel_ms * inv_total_pct);
 """
     cc_code += f"""
+    for (const ScaleCase& scale_case : scale_cases) {{
+        test_utils::init(C, {c_size});
+        memcpy(refC, C, {c_size} * sizeof({output_type}));
+        memcpy(ourC, C, {c_size} * sizeof({output_type}));
 
-    // Test ACC=false: C = A * B
-    bool ACC = false;
-    for (int idx = 0; idx < {c_size}; ++idx) {{
-        refC[idx] = 0;
-        ourC[idx] = 0;
-    }}
-    test_utils::gemm_ref(A, B, refC, M, N, K, lda, ldb, ldc, ACC, transA, transB);
-    {entry_func_name}(M, N, K, A, B, ourC, lda, ldb, ldc);
-    
-    if (!test_utils::is_same_matrix(refC, ourC, M, N, ldc, {tol_val}, {tol_val})) {{
-        int idx = test_utils::diff_index(refC, ourC, M, N, ldc, {tol_val}, {tol_val});
-        printf("ERROR: M=%d, N=%d, K=%d, lda=%d, ldb=%d, ldc=%d, ACC=%d, ref[%d]=%.6f, our[%d]=%.6f\\n",
-            M, N, K, lda, ldb, ldc, ACC, idx, refC[idx], idx, ourC[idx]);
-        test_utils::print_diff(refC, ourC, M, N, ldc);
-        all_passed = false;
-    }} else {{
-        printf("0------passed\\n");
-    }}
-    
-    // Test ACC=true: C = A * B + C_init
-    for (int i = 0; i < M; ++i) {{
-        for (int j = 0; j < N; ++j) {{
-            {output_type} c = 10.0f * rand() / RAND_MAX;
-            refC[i + j * ldc] = c;
-            ourC[i + j * ldc] = c;
+        test_utils::gemm_ref(A, B, refC, M, N, K, lda, ldb, ldc, scale_case.alpha, scale_case.beta, transA, transB);
+        {entry_func_name}(M, N, K, scale_case.alpha, A, B, scale_case.beta, ourC, lda, ldb, ldc);
+
+        if (!test_utils::is_same_matrix(refC, ourC, M, N, ldc, {tol_val}, {tol_val})) {{
+            int idx = test_utils::diff_index(refC, ourC, M, N, ldc, {tol_val}, {tol_val});
+            printf(
+                "ERROR: M=%d, N=%d, K=%d, lda=%d, ldb=%d, ldc=%d, alpha=%.6f, beta=%.6f, ref[%d]=%.6f, our[%d]=%.6f\\n",
+                M, N, K, lda, ldb, ldc, scale_case.alpha, scale_case.beta, idx, refC[idx], idx, ourC[idx]
+            );
+            test_utils::print_diff(refC, ourC, M, N, ldc);
+            all_passed = false;
+        }} else {{
+            printf("%s------passed\\n", scale_case.label);
         }}
-    }}
-    
-    ACC = true;
-    test_utils::gemm_ref(A, B, refC, M, N, K, lda, ldb, ldc, ACC, transA, transB);
-    {entry_func_name}(M, N, K, A, B, ourC, lda, ldb, ldc);
-    
-    if (!test_utils::is_same_matrix(refC, ourC, M, N, ldc, {tol_val}, {tol_val})) {{
-        int idx = test_utils::diff_index(refC, ourC, M, N, ldc, {tol_val}, {tol_val});
-        printf("ERROR: M=%d, N=%d, K=%d, lda=%d, ldb=%d, ldc=%d, ACC=%d, ref[%d]=%.6f, our[%d]=%.6f\\n",
-            M, N, K, lda, ldb, ldc, ACC, idx, refC[idx], idx, ourC[idx]);
-        test_utils::print_diff(refC, ourC, M, N, ldc);
-        all_passed = false;
-    }} else {{
-        printf("1------passed\\n");
     }}
 
     free(A);
@@ -431,7 +423,7 @@ def generate_sme_range_test_cpp(
 
     cc_code = test_cpp_prelude(guard_name, input_type_include)
     cc_code += f"""
-extern "C" int {entry_func_name}(const long M, const long N, const long K, const {input_type} *A, const {input_type} *B, {output_type} *C, const long lda, const long ldb, const long ldc);
+extern "C" int {entry_func_name}(const long M, const long N, const long K, const float alpha, const {input_type} *A, const {input_type} *B, const float beta, {output_type} *C, const long lda, const long ldb, const long ldc);
 
 void* _mm_malloc(size_t align, size_t sz)
 {{
@@ -467,6 +459,16 @@ int main()
     const bool perf_flag = false;
     (void)perf_flag;
     (void){repeat};
+    struct ScaleCase {{
+        float alpha;
+        float beta;
+        const char* label;
+    }};
+    const ScaleCase scale_cases[] = {{
+        {{1.0f, 1.0f, "alpha=1,beta=1"}},
+        {{1.0f, 0.0f, "alpha=1,beta=0"}},
+        {{0.5f, 0.25f, "alpha=0.5,beta=0.25"}},
+    }};
 
     if (!emit_progress_markers) {{
         printf("M=%d:%d:%d, N=%d:%d:%d, K=%d:%d:%d, transA=%c, transB=%c, data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}, pack_a={str(pack_a).lower()}, pack_b={str(pack_b).lower()}\\n",
@@ -543,32 +545,24 @@ int main()
                     ourC[idx] = 0;
                 }}
 
-                test_utils::gemm_ref(A, B, refC, M, N, K, lda, ldb, ldc, false, transA, transB);
-                {entry_func_name}(M, N, K, A, B, ourC, lda, ldb, ldc);
-
-                if (test_utils::is_same_matrix(refC, ourC, M, N, ldc, {tol_val}, {tol_val})) {{
+                bool case_passed = true;
+                for (const ScaleCase& scale_case : scale_cases) {{
                     test_utils::init(C, c_size);
-                    for (size_t idx = 0; idx < c_size; ++idx) {{
-                        refC[idx] = C[idx];
-                        ourC[idx] = C[idx];
-                    }}
+                    memcpy(refC, C, c_size * sizeof({output_type}));
+                    memcpy(ourC, C, c_size * sizeof({output_type}));
 
-                    test_utils::gemm_ref(A, B, refC, M, N, K, lda, ldb, ldc, true, transA, transB);
-                    {entry_func_name}(M, N, K, A, B, ourC, lda, ldb, ldc);
+                    test_utils::gemm_ref(A, B, refC, M, N, K, lda, ldb, ldc, scale_case.alpha, scale_case.beta, transA, transB);
+                    {entry_func_name}(M, N, K, scale_case.alpha, A, B, scale_case.beta, ourC, lda, ldb, ldc);
 
-                    if (test_utils::is_same_matrix(refC, ourC, M, N, ldc, {tol_val}, {tol_val})) {{
-                        ++passed_tests;
-                        if (!emit_progress_markers) {{
-                            printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "PASSED");
-                        }}
-                    }} else {{
+                    if (!test_utils::is_same_matrix(refC, ourC, M, N, ldc, {tol_val}, {tol_val})) {{
                         ++failed_tests;
+                        case_passed = false;
                         const int idx = test_utils::diff_index(refC, ourC, M, N, ldc, {tol_val}, {tol_val});
                         if (!emit_progress_markers) {{
                             printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "FAILED");
                         }}
-                        printf("ERROR: M=%d, N=%d, K=%d, lda=%d, ldb=%d, ldc=%d, ACC=1, ref[%d]=%.6f, our[%d]=%.6f\\n",
-                            M, N, K, lda, ldb, ldc, idx, refC[idx], idx, ourC[idx]);
+                        printf("ERROR: M=%d, N=%d, K=%d, lda=%d, ldb=%d, ldc=%d, alpha=%.6f, beta=%.6f, ref[%d]=%.6f, our[%d]=%.6f\\n",
+                            M, N, K, lda, ldb, ldc, scale_case.alpha, scale_case.beta, idx, refC[idx], idx, ourC[idx]);
                         test_utils::print_diff(refC, ourC, M, N, ldc);
                         free(A);
                         free(B);
@@ -577,21 +571,13 @@ int main()
                         free(ourC);
                         return 1;
                     }}
-                }} else {{
-                    ++failed_tests;
-                    const int idx = test_utils::diff_index(refC, ourC, M, N, ldc, {tol_val}, {tol_val});
+                }}
+
+                if (case_passed) {{
+                    ++passed_tests;
                     if (!emit_progress_markers) {{
-                        printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "FAILED");
+                        printf("%12d %12d %12d %14d %14d %14s\\n", M, N, K, lda, ldb, "PASSED");
                     }}
-                    printf("ERROR: M=%d, N=%d, K=%d, lda=%d, ldb=%d, ldc=%d, ACC=0, ref[%d]=%.6f, our[%d]=%.6f\\n",
-                        M, N, K, lda, ldb, ldc, idx, refC[idx], idx, ourC[idx]);
-                    test_utils::print_diff(refC, ourC, M, N, ldc);
-                    free(A);
-                    free(B);
-                    free(C);
-                    free(refC);
-                    free(ourC);
-                    return 1;
                 }}
 
                 ++completed_tests;

@@ -217,6 +217,15 @@ class VectorRegisters:
     b_contiguous_low: str = "z27"
     save_tmp: str = "z25"
     save_tmp1: str = "z26"
+    save_alpha: str = "z27"
+    save_beta: str = "z28"
+
+
+@dataclass(frozen=True)
+class ScalarRegisters:
+    alpha_arg: str = "s0"
+    beta_arg: str = "s1"
+    beta_cmp_tmp: str = "s16"
 
 
 @dataclass(frozen=True)
@@ -239,6 +248,7 @@ class RegisterPlan:
     address: AddressRegisters = field(default_factory=AddressRegisters)
     predicates: PredicateRegisters = field(default_factory=PredicateRegisters)
     vectors: VectorRegisters = field(default_factory=VectorRegisters)
+    scalars: ScalarRegisters = field(default_factory=ScalarRegisters)
     save: SaveRegisters = field(default_factory=SaveRegisters)
     kernel_variants: Tuple[KernelVariantRegisters, ...] = (
         KernelVariantRegisters(("z0", "z1", "z2", "z3"), ("z16", "z17", "z24", "z25")),

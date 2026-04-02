@@ -1,5 +1,22 @@
-from global_config import get_save_base_slice_indices, get_save_subtile_count, get_save_tail_mask, get_save_vl_offsets
+from global_config import (
+    get_alpha_stack_offset,
+    get_beta_stack_offset,
+    get_save_base_slice_indices,
+    get_save_subtile_count,
+    get_save_tail_mask,
+    get_save_vl_offsets,
+)
 from kernel_asm import save_zacol
+
+
+def _word_reg(xreg):
+    return f"w{xreg[1:]}"
+
+
+def _save_label(label, suffix=None):
+    if suffix is None:
+        return label
+    return f"{label}_{suffix}"
 
 
 def get_pg0(ctx):
@@ -64,6 +81,32 @@ def _save_column_configs(ctx):
     ]
 
 
+def gen_save_alpha_setup(ctx):
+    regs = ctx.registers
+    tmp_ptr = regs.address.TMP_PTR
+    return (
+        f"ldr      {_word_reg(tmp_ptr)}, [sp, #{get_alpha_stack_offset()}]\n"
+        f"dup      {regs.vectors.save_alpha}.s, {_word_reg(tmp_ptr)}\n"
+    )
+
+
+def gen_save_beta_setup(ctx):
+    regs = ctx.registers
+    tmp_ptr = regs.address.TMP_PTR
+    return (
+        f"ldr      {_word_reg(tmp_ptr)}, [sp, #{get_beta_stack_offset()}]\n"
+        f"dup      {regs.vectors.save_beta}.s, {_word_reg(tmp_ptr)}\n"
+    )
+
+
+def gen_save_beta_zero_check(ctx):
+    regs = ctx.registers
+    return (
+        f"ldr      {regs.scalars.beta_cmp_tmp}, [sp, #{get_beta_stack_offset()}]\n"
+        f"fcmp     {regs.scalars.beta_cmp_tmp}, #0.0\n"
+    )
+
+
 def _gen_save_base_index_init(ctx):
     # Seed the ZA slice indices used to read each saved column group out of the accumulator tile.
     code_parts = []
@@ -84,7 +127,7 @@ def _gen_save_column_ptr_setup(ctx):
     return "".join(code_parts)
 
 
-def _save_zacol_group(ctx, count, pc, za_regs, base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2="z30", t3="z31"):
+def _save_zacol_group(ctx, count, pc, za_regs, base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2="z30", t3="z31", beta_zero=False):
     # Save one N-group by walking the participating ZA registers, predicates, and VL offsets in lockstep.
     predicates = _save_subtile_predicates(ctx, count)
     temp_pairs = _save_temp_pairs(rab0, rc0, rab1, rc1, t0, t1, t2, t3)
@@ -97,25 +140,25 @@ def _save_zacol_group(ctx, count, pc, za_regs, base_idx, idx, rab0, rc0, rab1, r
         get_save_vl_offsets(),
     ):
         rab, rc = temps
-        code_parts.append(save_zacol(pc, f"#{offset}", za_reg, base_idx, idx, predicate, rab, rc))
+        code_parts.append(save_zacol(ctx, pc, f"#{offset}", za_reg, base_idx, idx, predicate, rab, rc, beta_zero=beta_zero))
     code_parts.append(f"add      {pc}, {pc}, {ctx.registers.params.LDC}, lsl #2\n")
     return "".join(code_parts)
 
 
-def save_zacol_1VL(ctx, pc, c0, c1, c2, c3, base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2="z30", t3="z31"):
-    return _save_zacol_group(ctx, 1, pc, [c0], base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2, t3)
+def save_zacol_1VL(ctx, pc, c0, c1, c2, c3, base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2="z30", t3="z31", beta_zero=False):
+    return _save_zacol_group(ctx, 1, pc, [c0], base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2, t3, beta_zero=beta_zero)
 
 
-def save_zacol_2VL(ctx, pc, c0, c1, c2, c3, base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2="z30", t3="z31"):
-    return _save_zacol_group(ctx, 2, pc, [c0, c1], base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2, t3)
+def save_zacol_2VL(ctx, pc, c0, c1, c2, c3, base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2="z30", t3="z31", beta_zero=False):
+    return _save_zacol_group(ctx, 2, pc, [c0, c1], base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2, t3, beta_zero=beta_zero)
 
 
-def save_zacol_3VL(ctx, pc, c0, c1, c2, c3, base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2="z30", t3="z31"):
-    return _save_zacol_group(ctx, 3, pc, [c0, c1, c2], base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2, t3)
+def save_zacol_3VL(ctx, pc, c0, c1, c2, c3, base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2="z30", t3="z31", beta_zero=False):
+    return _save_zacol_group(ctx, 3, pc, [c0, c1, c2], base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2, t3, beta_zero=beta_zero)
 
 
-def save_zacol_4VL(ctx, pc, c0, c1, c2, c3, base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2="z30", t3="z31"):
-    return _save_zacol_group(ctx, 4, pc, [c0, c1, c2, c3], base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2, t3)
+def save_zacol_4VL(ctx, pc, c0, c1, c2, c3, base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2="z30", t3="z31", beta_zero=False):
+    return _save_zacol_group(ctx, 4, pc, [c0, c1, c2, c3], base_idx, idx, rab0, rc0, rab1, rc1, t0, t1, t2, t3, beta_zero=beta_zero)
 
 
 save_zacol_map = {
@@ -126,14 +169,28 @@ save_zacol_map = {
 }
 
 
-def kernel_save_c_base_val(ctx, label, num, mvl, nvl, pc, c0="za0", c1="za1", c2="za2", c3="za3"):
+def kernel_save_c_base_val(
+    ctx,
+    label,
+    num,
+    mvl,
+    nvl,
+    pc,
+    c0="za0",
+    c1="za1",
+    c2="za2",
+    c3="za3",
+    beta_zero=False,
+    save_label_suffix=None,
+):
     # Handle the final short N group by iterating column-by-column instead of using the fully unrolled save path.
     regs = ctx.registers
+    save_label = _save_label(label, save_label_suffix)
     code_str = f""
     code_str += f"mov      {regs.counters.TMP_CNT}, {num}\n"
     code_str += f"mov      {_save_base_index_regs(ctx)[0]}, #0\n"
     code_str += f"mov      {regs.address.TMP_PTR1}, {pc}\n"
-    code_str += f".loop_save_c_j_{mvl}_{nvl}_{label}:\n"
+    code_str += f".loop_save_c_j_{mvl}_{nvl}_{save_label}:\n"
     code_str += save_zacol_map[f"save_zacol_{mvl}"](
         ctx,
         pc,
@@ -149,16 +206,17 @@ def kernel_save_c_base_val(ctx, label, num, mvl, nvl, pc, c0="za0", c1="za1", c2
         "z3",
         ctx.registers.vectors.save_tmp,
         ctx.registers.vectors.save_tmp1,
+        beta_zero=beta_zero,
     )
     code_str += f"add      {_save_base_index_regs(ctx)[0]}, {_save_base_index_regs(ctx)[0]}, #1\n"
     code_str += f"add      {regs.address.TMP_PTR1}, {regs.address.TMP_PTR1}, {regs.params.LDC}\n"
     code_str += f"mov      {pc}, {regs.address.TMP_PTR1}\n"
     code_str += f"subs     {regs.counters.TMP_CNT}, {regs.counters.TMP_CNT}, #1\n"
-    code_str += f"bgt      .loop_save_c_j_{mvl}_{nvl}_{label}\n"
+    code_str += f"bgt      .loop_save_c_j_{mvl}_{nvl}_{save_label}\n"
     return code_str
 
 
-def kernel_save_c_base_n_1VL_(ctx, mvl, c0="za0", c1="za1", c2="za2", c3="za3"):
+def kernel_save_c_base_n_1VL_(ctx, mvl, c0="za0", c1="za1", c2="za2", c3="za3", beta_zero=False):
     # Save one logical N group of width `1VL` using the ZA registers that belong to the current outer save chunk.
     za_regs = [c0, c1, c2, c3][: _vl_multiplier(mvl)]
     code_parts = []
@@ -176,28 +234,54 @@ def kernel_save_c_base_n_1VL_(ctx, mvl, c0="za0", c1="za1", c2="za2", c3="za3"):
                     *temps,
                     ctx.registers.vectors.save_tmp,
                     ctx.registers.vectors.save_tmp1,
+                    beta_zero=beta_zero,
                 )
             )
     return "".join(code_parts)
 
 
-def kernel_save_c_base_n_1VL(ctx, label, mvl, nvl, c0="za0", c1="za1", c2="za2", c3="za3"):
+def kernel_save_c_base_n_1VL(
+    ctx,
+    label,
+    mvl,
+    nvl,
+    c0="za0",
+    c1="za1",
+    c2="za2",
+    c3="za3",
+    beta_zero=False,
+    save_label_suffix=None,
+):
     # Save the final `1VL`-based N group, branching between the fully aligned path and the short-tail helper.
     regs = ctx.registers
+    save_label = _save_label(label, save_label_suffix)
     code_str = f""
     code_str += _gen_save_base_index_init(ctx)
     code_str += f"ands     {regs.counters.TMP_CNT_POST}, {regs.dims.MIN_N}, #{get_save_tail_mask()}\n"
-    code_str += f"bne      .kernel_save_c_val_{mvl}_{nvl}_{label}\n"
+    code_str += f"bne      .kernel_save_c_val_{mvl}_{nvl}_{save_label}\n"
     code_str += _gen_save_column_ptr_setup(ctx)
-    code_str += kernel_save_c_base_n_1VL_(ctx, mvl, c0, c1, c2, c3)
-    code_str += f"b        .kernel_save_c_val_{mvl}_{nvl}_{label}_end\n"
-    code_str += f".kernel_save_c_val_{mvl}_{nvl}_{label}:\n"
-    code_str += kernel_save_c_base_val(ctx, label, regs.counters.TMP_CNT_POST, mvl, nvl, regs.pointers.pC0, c0, c1, c2, c3)
-    code_str += f".kernel_save_c_val_{mvl}_{nvl}_{label}_end:\n"
+    code_str += kernel_save_c_base_n_1VL_(ctx, mvl, c0, c1, c2, c3, beta_zero=beta_zero)
+    code_str += f"b        .kernel_save_c_val_{mvl}_{nvl}_{save_label}_end\n"
+    code_str += f".kernel_save_c_val_{mvl}_{nvl}_{save_label}:\n"
+    code_str += kernel_save_c_base_val(
+        ctx,
+        label,
+        regs.counters.TMP_CNT_POST,
+        mvl,
+        nvl,
+        regs.pointers.pC0,
+        c0,
+        c1,
+        c2,
+        c3,
+        beta_zero=beta_zero,
+        save_label_suffix=save_label_suffix,
+    )
+    code_str += f".kernel_save_c_val_{mvl}_{nvl}_{save_label}_end:\n"
     return code_str
 
 
-def _kernel_save_c_base_n_multi(ctx, label, mvl, full_groups, tail_group, tail_nvl):
+def _kernel_save_c_base_n_multi(ctx, label, mvl, full_groups, tail_group, tail_nvl, beta_zero=False, save_label_suffix=None):
     # Save wider N groups by generating their full `1VL` slices first and then delegating the last partial group to the tail helper.
     regs = ctx.registers
     code_str = f""
@@ -205,61 +289,112 @@ def _kernel_save_c_base_n_multi(ctx, label, mvl, full_groups, tail_group, tail_n
     code_str += f"mov      {regs.address.TMP_PTR}, {regs.pointers.pC0}\n"
     code_str += _gen_save_column_ptr_setup(ctx)
     for za_regs in full_groups:
-        code_str += kernel_save_c_base_n_1VL_(ctx, mvl, *za_regs)
-    code_str += kernel_save_c_base_n_1VL(ctx, label, mvl, tail_nvl, *tail_group)
+        code_str += kernel_save_c_base_n_1VL_(ctx, mvl, *za_regs, beta_zero=beta_zero)
+    code_str += kernel_save_c_base_n_1VL(
+        ctx,
+        label,
+        mvl,
+        tail_nvl,
+        *tail_group,
+        beta_zero=beta_zero,
+        save_label_suffix=save_label_suffix,
+    )
     code_str += f"add      {regs.pointers.pC0}, {regs.address.TMP_PTR}, {regs.dims.MIN_M}, lsl #2\n"
     return code_str
 
 
-def kernel_save_c_base_n_2VL(ctx, label, mvl):
-    return _kernel_save_c_base_n_multi(ctx, label, mvl, [("za0", "za2")], ("za1", "za3"), "2VL")
+def kernel_save_c_base_n_2VL(ctx, label, mvl, beta_zero=False, save_label_suffix=None):
+    return _kernel_save_c_base_n_multi(
+        ctx,
+        label,
+        mvl,
+        [("za0", "za2")],
+        ("za1", "za3"),
+        "2VL",
+        beta_zero=beta_zero,
+        save_label_suffix=save_label_suffix,
+    )
 
 
-def kernel_save_c_base_n_4VL(ctx, label, mvl):
-    return _kernel_save_c_base_n_multi(ctx, label, mvl, [("za0",), ("za1",), ("za2",)], ("za3",), "4VL")
+def kernel_save_c_base_n_4VL(ctx, label, mvl, beta_zero=False, save_label_suffix=None):
+    return _kernel_save_c_base_n_multi(
+        ctx,
+        label,
+        mvl,
+        [("za0",), ("za1",), ("za2",)],
+        ("za3",),
+        "4VL",
+        beta_zero=beta_zero,
+        save_label_suffix=save_label_suffix,
+    )
 
 
-def kernel_save_c_base_n_3VL(ctx, label, mvl):
-    return _kernel_save_c_base_n_multi(ctx, label, mvl, [("za0",), ("za1",)], ("za2",), "3VL")
+def kernel_save_c_base_n_3VL(ctx, label, mvl, beta_zero=False, save_label_suffix=None):
+    return _kernel_save_c_base_n_multi(
+        ctx,
+        label,
+        mvl,
+        [("za0",), ("za1",)],
+        ("za2",),
+        "3VL",
+        beta_zero=beta_zero,
+        save_label_suffix=save_label_suffix,
+    )
 
 
-def _kernel_save_c_single_n(ctx, label, mvl, *za_regs):
+def _kernel_save_c_single_n(ctx, label, mvl, *za_regs, beta_zero=False, save_label_suffix=None):
     # Save kernels whose N shape is already `1VL`, then advance pC0 to the next M tile origin.
     regs = ctx.registers
     code_str = f""
     code_str += f"mov      {regs.address.TMP_PTR}, {regs.pointers.pC0}\n"
-    code_str += kernel_save_c_base_n_1VL(ctx, label, mvl, "1VL", *za_regs)
+    code_str += kernel_save_c_base_n_1VL(
+        ctx,
+        label,
+        mvl,
+        "1VL",
+        *za_regs,
+        beta_zero=beta_zero,
+        save_label_suffix=save_label_suffix,
+    )
     code_str += f"add      {regs.pointers.pC0}, {regs.address.TMP_PTR}, {regs.dims.MIN_M}, lsl #2\n"
     return code_str
 
 
-def kernel_save_c_4VL_1VL(ctx, label):
-    return _kernel_save_c_single_n(ctx, label, "4VL", "za0", "za1", "za2", "za3")
+def kernel_save_c_4VL_1VL(ctx, label, beta_zero=False, save_label_suffix=None):
+    return _kernel_save_c_single_n(
+        ctx, label, "4VL", "za0", "za1", "za2", "za3", beta_zero=beta_zero, save_label_suffix=save_label_suffix
+    )
 
 
-def kernel_save_c_1VL_4VL(ctx, label):
-    return kernel_save_c_base_n_4VL(ctx, label, "1VL")
+def kernel_save_c_1VL_4VL(ctx, label, beta_zero=False, save_label_suffix=None):
+    return kernel_save_c_base_n_4VL(ctx, label, "1VL", beta_zero=beta_zero, save_label_suffix=save_label_suffix)
 
 
-def kernel_save_c_3VL_1VL(ctx, label):
-    return _kernel_save_c_single_n(ctx, label, "3VL", "za0", "za1", "za2")
+def kernel_save_c_3VL_1VL(ctx, label, beta_zero=False, save_label_suffix=None):
+    return _kernel_save_c_single_n(
+        ctx, label, "3VL", "za0", "za1", "za2", beta_zero=beta_zero, save_label_suffix=save_label_suffix
+    )
 
 
-def kernel_save_c_1VL_3VL(ctx, label):
-    return kernel_save_c_base_n_3VL(ctx, label, "1VL")
+def kernel_save_c_1VL_3VL(ctx, label, beta_zero=False, save_label_suffix=None):
+    return kernel_save_c_base_n_3VL(ctx, label, "1VL", beta_zero=beta_zero, save_label_suffix=save_label_suffix)
 
 
-def kernel_save_c_2VL_2VL(ctx, label):
-    return kernel_save_c_base_n_2VL(ctx, label, "2VL")
+def kernel_save_c_2VL_2VL(ctx, label, beta_zero=False, save_label_suffix=None):
+    return kernel_save_c_base_n_2VL(ctx, label, "2VL", beta_zero=beta_zero, save_label_suffix=save_label_suffix)
 
 
-def kernel_save_c_1VL_2VL(ctx, label):
-    return kernel_save_c_base_n_2VL(ctx, label, "1VL")
+def kernel_save_c_1VL_2VL(ctx, label, beta_zero=False, save_label_suffix=None):
+    return kernel_save_c_base_n_2VL(ctx, label, "1VL", beta_zero=beta_zero, save_label_suffix=save_label_suffix)
 
 
-def kernel_save_c_2VL_1VL(ctx, label):
-    return _kernel_save_c_single_n(ctx, label, "2VL", "za0", "za2")
+def kernel_save_c_2VL_1VL(ctx, label, beta_zero=False, save_label_suffix=None):
+    return _kernel_save_c_single_n(
+        ctx, label, "2VL", "za0", "za2", beta_zero=beta_zero, save_label_suffix=save_label_suffix
+    )
 
 
-def kernel_save_c_1VL_1VL(ctx, label):
-    return _kernel_save_c_single_n(ctx, label, "1VL", "za0")
+def kernel_save_c_1VL_1VL(ctx, label, beta_zero=False, save_label_suffix=None):
+    return _kernel_save_c_single_n(
+        ctx, label, "1VL", "za0", beta_zero=beta_zero, save_label_suffix=save_label_suffix
+    )

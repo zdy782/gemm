@@ -9,6 +9,9 @@ LDNT1_H = "ldnt1h"
 
 TOL_BF16 = "5e-3"
 TOL_FP16 = "1e-3"
+KERNEL_CALLEE_SAVE_SLOTS = 11
+KERNEL_SCALAR_PARAM_SLOT = 11
+KERNEL_FRAME_SLOTS = 12
 
 
 def get_s_elements_per_vl():
@@ -102,6 +105,18 @@ def get_tolerance_value(spec):
     raise ValueError(f"Unsupported precision: {spec.data_type}")
 
 
+def get_kernel_frame_size():
+    return KERNEL_FRAME_SLOTS * 16
+
+
+def get_alpha_stack_offset():
+    return KERNEL_SCALAR_PARAM_SLOT * 16
+
+
+def get_beta_stack_offset():
+    return KERNEL_SCALAR_PARAM_SLOT * 16 + 4
+
+
 def PROLOGUE(real_name):
     code_str = f""
     code_str += f".text\n"
@@ -116,6 +131,7 @@ def NORMALIZE_RUNTIME_KERNEL_ABI(registers):
     code_str = f""
     # Runtime kernels follow the BLAS-style order:
     #   x0/x1/x2 = M/N/K
+    #   s0/s1    = alpha/beta
     #   x3/x4/x5 = A/B/C
     #   x6/x7    = lda/ldb
     #   [sp]     = ldc (9th integer-class argument)
@@ -142,7 +158,7 @@ def NORMALIZE_RUNTIME_KERNEL_ABI(registers):
 def SAVE_REGS(registers):
     code_str = f""
     code_str += f".align 5\n"
-    code_str += f"add     sp, sp, #-(11 * 16)\n"
+    code_str += f"add     sp, sp, #-({get_kernel_frame_size()})\n"
     code_str += f"stp     d8, d9, [sp, #(0 * 16)]\n"
     code_str += f"stp     d10, d11, [sp, #(1 * 16)]\n"
     code_str += f"stp     d12, d13, [sp, #(2 * 16)]\n"
@@ -154,6 +170,10 @@ def SAVE_REGS(registers):
     code_str += f"stp     {registers.pointers.pA0}, {registers.address.pA_OFFSET}, [sp, #(8 * 16)]\n"
     code_str += f"stp     {registers.pointers.pAn}, {registers.address.pB_OFFSET}, [sp, #(9 * 16)]\n"
     code_str += f"stp     {registers.address.TMP_PTR2}, {registers.pointers.pAt}, [sp, #(10 * 16)]\n"
+    # Spill runtime alpha/beta once so the SME body may freely reuse z0-z31
+    # while the save path later reloads the scalar coefficients.
+    code_str += f"str     {registers.scalars.alpha_arg}, [sp, #{get_alpha_stack_offset()}]\n"
+    code_str += f"str     {registers.scalars.beta_arg}, [sp, #{get_beta_stack_offset()}]\n"
     return code_str
 
 
@@ -170,7 +190,7 @@ def RESTORE_REGS(registers):
     code_str += f"ldp     {registers.pointers.pA0}, {registers.address.pA_OFFSET}, [sp, #(8 * 16)]\n"
     code_str += f"ldp     {registers.pointers.pAn}, {registers.address.pB_OFFSET}, [sp, #(9 * 16)]\n"
     code_str += f"ldp     {registers.address.TMP_PTR2}, {registers.pointers.pAt}, [sp, #(10 * 16)]\n"
-    code_str += f"add     sp, sp, #(11*16)\n"
+    code_str += f"add     sp, sp, #({get_kernel_frame_size()})\n"
     return code_str
 
 

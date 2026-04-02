@@ -8,6 +8,9 @@ from kernel_mvlxnvl import (
     resolve_small_kernel_pair_plan,
 )
 from kernel_save import (
+    gen_save_alpha_setup,
+    gen_save_beta_setup,
+    gen_save_beta_zero_check,
     kernel_save_c_1VL_1VL,
     kernel_save_c_1VL_2VL,
     kernel_save_c_1VL_3VL,
@@ -145,6 +148,15 @@ def kernel_mm_loop_k(ctx, label, mvl, nvl, m_fullness="single", n_fullness="sing
         pair_plan,
     )
     code_str += f".SAVE_C_{mvl}_{nvl}_{label}:\n"
-    code_str += _get_kernel_save_fn(mvl, nvl)(ctx, label)
+    save_fn = _get_kernel_save_fn(mvl, nvl)
+    code_str += gen_save_alpha_setup(ctx)
+    code_str += gen_save_beta_zero_check(ctx)
+    code_str += f"bne      .SAVE_C_{mvl}_{nvl}_{label}_beta_nonzero\n"
+    code_str += save_fn(ctx, label, beta_zero=True, save_label_suffix="beta_zero")
+    code_str += f"b        .SAVE_C_{mvl}_{nvl}_{label}_done\n"
+    code_str += f".SAVE_C_{mvl}_{nvl}_{label}_beta_nonzero:\n"
+    code_str += gen_save_beta_setup(ctx)
+    code_str += save_fn(ctx, label, beta_zero=False, save_label_suffix="beta_nonzero")
+    code_str += f".SAVE_C_{mvl}_{nvl}_{label}_done:\n"
     code_str += f"b        .end_of_loop_k_{nvl}_{exit_label}\n"
     return code_str

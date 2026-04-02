@@ -58,11 +58,24 @@ public:
   // - A[i,k] = A[i + k*lda]
   // - B[k,j] = B[k + j*ldb]
   // - C[i,j] = C[i + j*ldc]
-  static void gemm_ref(const KML_FP *A, const KML_FP *B, float *C, int M, int N, int K, int lda, int ldb, int ldc, bool ACC, char transA = 'N', char transB = 'N') {
+  static void gemm_ref(
+      const KML_FP *A,
+      const KML_FP *B,
+      float *C,
+      int M,
+      int N,
+      int K,
+      int lda,
+      int ldb,
+      int ldc,
+      float alpha,
+      float beta,
+      char transA = 'N',
+      char transB = 'N') {
     #pragma omp parallel for collapse(2)
     for (int j = 0; j < N; ++j) {
       for (int i = 0; i < M; ++i) {
-        float sum = ACC ? C[i + j * ldc] : 0.0f;
+        float ab_sum = 0.0f;
         for (int k = 0; k < K; ++k) {
           float a_val;
           float b_val;
@@ -76,9 +89,10 @@ public:
           } else {
             b_val = kml_to_float(B[j + k * ldb]);
           }
-          sum += a_val * b_val;
+          ab_sum += a_val * b_val;
         }
-        C[i + j * ldc] = sum;
+        const float c_prev = C[i + j * ldc];
+        C[i + j * ldc] = alpha * ab_sum + beta * c_prev;
       }
     }
   }

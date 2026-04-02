@@ -11,9 +11,9 @@ def precision_types(spec):
     raise ValueError(f"Unsupported precision: {spec.data_type}")
 
 
-def gen_driver_kernel_call(kernel_func_name, a_ptr, b_ptr, c_ptr, lda_name, ldb_name, ldc_name):
+def gen_driver_kernel_call(kernel_func_name, alpha_name, a_ptr, b_ptr, beta_name, c_ptr, lda_name, ldb_name, ldc_name):
     return (
-        f"{kernel_func_name}(minI, minJ, minL, {a_ptr}, {b_ptr}, {c_ptr}, "
+        f"{kernel_func_name}(minI, minJ, minL, {alpha_name}, {a_ptr}, {b_ptr}, {beta_name}, {c_ptr}, "
         f"{lda_name}, {ldb_name}, {ldc_name});"
     )
 
@@ -100,7 +100,7 @@ def generate_gemm_driver(
 
     kernel_call_code = (
         "const uint64_t kernel_start_ns = autogemm_now_ns();\n"
-        f"                {gen_driver_kernel_call(kernel_func_name, 'sa', 'sb', 'C + is + js * ldc', 'lda_kernel', 'ldb_kernel', 'ldc')}\n"
+        f"                {gen_driver_kernel_call(kernel_func_name, 'alpha', 'sa', 'sb', 'beta', 'C + is + js * ldc', 'lda_kernel', 'ldb_kernel', 'ldc')}\n"
         "                autogemm_profile.kernel_ms += autogemm_elapsed_ms(kernel_start_ns, autogemm_now_ns());\n"
         "                ++autogemm_profile.kernel_calls;\n"
     )
@@ -150,7 +150,7 @@ def generate_gemm_driver(
 #endif
 {input_include}
 
-extern "C" int {kernel_func_name}(const long M, const long N, const long K, const {input_type} *A, const {input_type} *B, {output_type} *C, const long lda, const long ldb, const long ldc);
+extern "C" int {kernel_func_name}(const long M, const long N, const long K, const float alpha, const {input_type} *A, const {input_type} *B, const float beta, {output_type} *C, const long lda, const long ldb, const long ldc);
 
 struct AutoGemmProfile {{
     double a_pack_ms;
@@ -208,7 +208,7 @@ static constexpr int AUTOGEMM_COPY_UNROLL_N = {spec.tile.n_vl};
         code += gen_pack_decl(oncopy_name if spec.transB == "N" else otcopy_name, input_type)
 
     code += f"""
-extern "C" int {driver_func_name}(const long M, const long N, const long K, const {input_type} *A, const {input_type} *B, {output_type} *C, const long lda, const long ldb, const long ldc)
+extern "C" int {driver_func_name}(const long M, const long N, const long K, const float alpha, const {input_type} *A, const {input_type} *B, const float beta, {output_type} *C, const long lda, const long ldb, const long ldc)
 {{
     const uint64_t total_start_ns = autogemm_now_ns();
     const {input_type} *sa = nullptr;
