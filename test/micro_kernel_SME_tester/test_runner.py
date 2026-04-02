@@ -420,22 +420,16 @@ def run_range_test(
             print(f"[INFO] Compiling range test: M={M_range}, N={N_range}, K={K_range}")
             print(f"[INFO] Expanded inner tests: {total_inner_tests}")
         compile_cmd = f"cd {test_path} && make -s"
-        if verbose:
-            compile_result = subprocess.run(
-                compile_cmd,
-                shell=True,
-                text=True,
-                encoding="utf-8",
-            )
-        else:
-            compile_result = subprocess.run(
-                compile_cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-            )
+        compile_result = subprocess.run(
+            compile_cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+        )
+        if verbose and compile_result.stdout:
+            print(f"[COMPILE OUTPUT]\n{compile_result.stdout}")
         if compile_result.returncode != 0:
             compile_output = getattr(compile_result, "stdout", "")
             compile_failure = _extract_failure_line(compile_output) or (
@@ -499,22 +493,16 @@ def run_range_test(
                 print(f"[ERROR DETAIL] {run_failure}")
                 return False
             return True
-        if verbose:
-            run_result = subprocess.run(
-                run_cmd,
-                shell=True,
-                text=True,
-                encoding="utf-8",
-            )
-        else:
-            run_result = subprocess.run(
-                run_cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-            )
+        run_result = subprocess.run(
+            run_cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+        )
+        if verbose and run_result.stdout:
+            print(f"[RUN OUTPUT]\n{run_result.stdout}")
         if run_result.returncode != 0:
             run_output = getattr(run_result, "stdout", "")
             run_failure = _extract_failure_line(run_output) or (
