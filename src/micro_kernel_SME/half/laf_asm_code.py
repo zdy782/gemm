@@ -1,4 +1,4 @@
-from global_config import (
+from .global_config import (
     NORMALIZE_RUNTIME_KERNEL_ABI,
     PROLOGUE,
     RESTORE_REGS,
@@ -7,7 +7,7 @@ from global_config import (
     STOP_SME_FEATURE,
     tile_size_from_vl,
 )
-from kernel_mm_loop_L1 import kernel_mm_loop_n
+from .kernel_mm_loop_L1 import kernel_mm_loop_n
 
 
 def laf_asm_code(ctx, func_name):

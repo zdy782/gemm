@@ -6,7 +6,7 @@ It is oriented to real SME-capable ARMv9 hardware. Local VM, container, or emula
 
 ## Overview
 
-- Code generation is implemented in Python under `src/micro_kernel_SME/`.
+- Code generation is implemented in Python under `src/micro_kernel_SME/half/`.
 - Test drivers live under `test/micro_kernel_SME_tester/`.
 - The test flow generates `kernel_asm.S`, `test.cpp`, and a `Makefile`, then builds and runs the case with `clang` and `make`.
 - Supported data types in the current generator and test path:
@@ -15,7 +15,7 @@ It is oriented to real SME-capable ARMv9 hardware. Local VM, container, or emula
 
 ## Layout
 
-- `src/micro_kernel_SME/`
+- `src/micro_kernel_SME/half/`
   - SME assembly generation logic
   - data-type configuration
   - GEMM variant selection
@@ -55,6 +55,6 @@ python test/micro_kernel_SME_tester/test_ut.py
 
 ## Notes
 
-- The generated build flags come from `src/micro_kernel_SME/generate_makefile.py`.
+- The generated build flags come from `src/micro_kernel_SME/half/generate_makefile.py`.
 - Temporary generated test directories are created under `test/micro_kernel_SME_tester/tmp/` during runs.
 - This repository currently assumes an SME execution target. Apple M-series machines can be used for generator development, but not for native SME execution.

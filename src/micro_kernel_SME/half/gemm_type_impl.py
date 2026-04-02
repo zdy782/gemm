@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from global_config import get_half_input_size_shift, get_half_input_suffix
+from .global_config import get_half_input_size_shift, get_half_input_suffix
 
 # This file turns logical A/B lanes into concrete load-and-shape assembly for the chosen small/general model.
 

@@ -1,5 +1,5 @@
-from global_config import get_half_input_suffix, get_half_whilelt_increment, tile_size_from_vl
-from kernel_mm_loop_L2 import kernel_mm_loop_L2
+from .global_config import get_half_input_suffix, get_half_whilelt_increment, tile_size_from_vl
+from .kernel_mm_loop_L2 import kernel_mm_loop_L2
 
 # L1 is the outer N loop that measures the remaining columns, chooses the widest legal `nvl`, and hands that chunk to L2.
 

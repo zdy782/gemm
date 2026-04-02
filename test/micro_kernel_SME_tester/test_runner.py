@@ -48,9 +48,7 @@ def setup_environment():
     current_path = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.join(current_path, "..", "..")
     src_path = os.path.join(project_root, "src")
-    micro_kernel_sme_src_path = os.path.join(src_path, "micro_kernel_SME")
     sys.path.insert(0, src_path)
-    sys.path.insert(0, micro_kernel_sme_src_path)
     return current_path
 
 
@@ -78,9 +76,13 @@ def run_single_test(
     """Run the full workflow for a single test case."""
     current_path = setup_environment()
 
-    from generate_sme_test import generate_sme_asm, generate_sme_driver_cpp, generate_sme_test_cpp
-    from generate_makefile import generate_makefile
-    from global_config import assert_valid_tile_combo
+    from micro_kernel_SME.half.generate_sme_test import (
+        generate_sme_asm,
+        generate_sme_driver_cpp,
+        generate_sme_test_cpp,
+    )
+    from micro_kernel_SME.half.generate_makefile import generate_makefile
+    from micro_kernel_SME.half.global_config import assert_valid_tile_combo
 
     assert_valid_tile_combo(m_vl, n_vl)
 
@@ -267,9 +269,13 @@ def run_range_test(
     """Run one ref-style range UT row in a single generated tester."""
     current_path = setup_environment()
 
-    from generate_sme_test import generate_sme_asm, generate_sme_driver_cpp, generate_sme_range_test_cpp
-    from generate_makefile import generate_makefile
-    from global_config import assert_valid_tile_combo
+    from micro_kernel_SME.half.generate_sme_test import (
+        generate_sme_asm,
+        generate_sme_driver_cpp,
+        generate_sme_range_test_cpp,
+    )
+    from micro_kernel_SME.half.generate_makefile import generate_makefile
+    from micro_kernel_SME.half.global_config import assert_valid_tile_combo
 
     assert_valid_tile_combo(m_vl, n_vl)
 

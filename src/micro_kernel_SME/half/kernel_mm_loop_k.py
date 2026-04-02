@@ -1,5 +1,5 @@
-from global_config import get_half_k_loop_shift, get_half_k_remainder_mask, get_half_k_step
-from kernel_mvlxnvl import (
+from .global_config import get_half_k_loop_shift, get_half_k_remainder_mask, get_half_k_step
+from .kernel_mvlxnvl import (
     UNPAIRED_SMALL_KERNEL_PLAN,
     kernel_bc,
     kernel_ldntb_bc,
@@ -7,7 +7,7 @@ from kernel_mvlxnvl import (
     kernel_m0_last_k,
     resolve_small_kernel_pair_plan,
 )
-from kernel_save import (
+from .kernel_save import (
     gen_save_alpha_setup,
     gen_save_beta_setup,
     gen_save_beta_zero_check,

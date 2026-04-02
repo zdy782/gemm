@@ -1,9 +1,9 @@
-from gemm_config import resolve_model
-from generate_gemm_driver import generate_gemm_driver
-from global_config import assert_valid_tile_combo, get_tolerance_value
-from laf_asm_code import laf_asm_code
-from model_spec import GenerationContext, KernelSpec
-from register_plan import DEFAULT_REGISTER_PLAN
+from .gemm_config import resolve_model
+from .generate_gemm_driver import generate_gemm_driver
+from .global_config import assert_valid_tile_combo, get_tolerance_value
+from .laf_asm_code import laf_asm_code
+from .model_spec import GenerationContext, KernelSpec
+from .register_plan import DEFAULT_REGISTER_PLAN
 
 
 def build_symbol_names(spec: KernelSpec, uniq_id: str):

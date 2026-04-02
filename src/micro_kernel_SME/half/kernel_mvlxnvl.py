@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 
-from model_spec import GemmType
+from .model_spec import GemmType
 
-from global_config import LD1_H, LDNT1_H
-from kernel_asm import (
+from .global_config import LD1_H, LDNT1_H
+from .kernel_asm import (
     _side_is_contiguous,
     kernel_1VL_1VL,
     kernel_1VL_1VL_last_k,

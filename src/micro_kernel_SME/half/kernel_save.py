@@ -1,4 +1,4 @@
-from global_config import (
+from .global_config import (
     get_alpha_stack_offset,
     get_beta_stack_offset,
     get_save_base_slice_indices,
@@ -6,7 +6,7 @@ from global_config import (
     get_save_tail_mask,
     get_save_vl_offsets,
 )
-from kernel_asm import save_zacol
+from .kernel_asm import save_zacol
 
 
 def _word_reg(xreg):

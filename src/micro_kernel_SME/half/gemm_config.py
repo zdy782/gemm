@@ -1,14 +1,14 @@
 from dataclasses import dataclass
 from typing import Dict, Tuple
 
-from gemm_type_impl import (
+from .gemm_type_impl import (
     general_model,
     small_nn_model,
     small_nt_model,
     small_tn_model,
     small_tt_model,
 )
-from model_spec import GemmType, KernelSpec, Transpose
+from .model_spec import GemmType, KernelSpec, Transpose
 
 
 @dataclass(frozen=True)

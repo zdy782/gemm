@@ -1,6 +1,6 @@
 from copy import deepcopy
 
-from global_config import (
+from .global_config import (
     LDNT1,
     STNT1,
     get_half_input_size_shift,

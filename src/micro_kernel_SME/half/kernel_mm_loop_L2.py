@@ -1,5 +1,5 @@
-from global_config import get_half_input_suffix, tile_size_from_vl
-from kernel_mm_loop_k import gen_half_load_predicate_refresh, kernel_mm_loop_k
+from .global_config import get_half_input_suffix, tile_size_from_vl
+from .kernel_mm_loop_k import gen_half_load_predicate_refresh, kernel_mm_loop_k
 
 # L2 is the inner M loop that mirrors L1 by picking the widest legal `mvl` under the already chosen `nvl` chunk.
 
