@@ -10,7 +10,7 @@ from typing import Dict, List
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 BUNDLE_BUILDER = REPO_ROOT / "src" / "micro_kernel_SME" / "half" / "build_blas_bundle.py"
-BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v2"
+BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v3"
 
 CONFIG = {
     "numactl": ["numactl", "-m", "15"],

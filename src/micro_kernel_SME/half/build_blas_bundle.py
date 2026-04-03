@@ -35,7 +35,7 @@ TRANSPOSE_PAIRS: Tuple[Tuple[str, str], ...] = (("N", "N"), ("N", "T"), ("T", "N
 PRECISIONS: Tuple[str, ...] = ("bf16", "fp16")
 PLACEHOLDER_DIM = 256
 SHARED_LIB_NAME = "libautogemm_half.so"
-BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v2"
+BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v3"
 CC = os.environ.get("CC", "clang")
 CXX = os.environ.get("CXX", "clang++")
 AUTOGEMM_TARGET_TRIPLE = os.environ.get("AUTOGEMM_TARGET_TRIPLE", "")
@@ -1044,15 +1044,14 @@ def _compile_wrapper_and_library(variant_dir: Path, backends: Sequence[BackendSp
 def _compile_benchmark_executable(variant_dir: Path, data_type: str, backends: Sequence[BackendSpec]) -> Path:
     gen_dir = variant_dir / "gen"
     bin_dir = variant_dir / "bin"
-    bench_src = gen_dir / "benchmark_gemm.cpp"
+    bench_src = gen_dir / ("benchmark_sbgemm.cpp" if data_type == "bf16" else "benchmark_shgemm.cpp")
     bench_name = "sbgemm.goto" if data_type == "bf16" else "shgemm.goto"
     bench_path = bin_dir / bench_name
     define_flag = "-DAUTOGEMM_BF16" if data_type == "bf16" else "-DAUTOGEMM_FP16"
     march_flag = MARCH_FLAGS["bf16"] if data_type == "bf16" else MARCH_FLAGS["fp16"]
     selected_backends = [backend for backend in backends if backend.data_type == data_type]
 
-    if not bench_src.exists():
-        _write_file(bench_src, _generate_benchmark_cpp(selected_backends, data_type))
+    _write_file(bench_src, _generate_benchmark_cpp(selected_backends, data_type))
 
     _run_command(
         [
