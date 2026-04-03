@@ -39,11 +39,9 @@ def generate_gemm_driver(
     oncopy_name = f"{prefix}_oncopy"
     otcopy_name = f"{prefix}_otcopy"
 
-    a_workspace = spec.M * GEMM_Q if spec.pack_a else GEMM_P * GEMM_Q
     b_workspace = GEMM_Q * GEMM_R
     a_needs_pack = spec.pack_a
     b_needs_pack = spec.pack_b
-    max_a_panels = (spec.M + GEMM_P - 1) // GEMM_P if spec.pack_a else 0
 
     if spec.transA == "N":
         a_pack_call = f"{itcopy_name}(minL, minI, A + is + ls * lda, lda, A_pack);"
@@ -151,6 +149,44 @@ def generate_gemm_driver(
 #endif
 {input_include}
 
+#if defined(__STDC_HOSTED__) && __STDC_HOSTED__
+extern "C" void *malloc(unsigned long size);
+extern "C" void free(void *ptr);
+
+static inline void *autogemm_alloc_bytes(unsigned long size) {{
+    return malloc(size);
+}}
+
+static inline void autogemm_free_bytes(void *ptr) {{
+    free(ptr);
+}}
+
+static inline void autogemm_reset_alloc_state() {{
+}}
+#else
+static unsigned char autogemm_freestanding_heap[64UL * 1024UL * 1024UL];
+static unsigned long autogemm_freestanding_heap_cursor = 0;
+
+static inline void *autogemm_alloc_bytes(unsigned long size) {{
+    const unsigned long aligned_cursor = (autogemm_freestanding_heap_cursor + 63UL) & ~63UL;
+    const unsigned long aligned_size = (size + 63UL) & ~63UL;
+    if (aligned_cursor + aligned_size > sizeof(autogemm_freestanding_heap)) {{
+        return nullptr;
+    }}
+    void *ptr = autogemm_freestanding_heap + aligned_cursor;
+    autogemm_freestanding_heap_cursor = aligned_cursor + aligned_size;
+    return ptr;
+}}
+
+static inline void autogemm_free_bytes(void *ptr) {{
+    (void)ptr;
+}}
+
+static inline void autogemm_reset_alloc_state() {{
+    autogemm_freestanding_heap_cursor = 0;
+}}
+#endif
+
 extern "C" int {kernel_func_name}(const long M, const long N, const long K, const float alpha, const {input_type} *A, const {input_type} *B, const float beta, {output_type} *C, const long lda, const long ldb, const long ldc);
 
 struct AutoGemmProfile {{
@@ -188,12 +224,6 @@ extern "C" const AutoGemmProfile* {get_profile_name}() {{
 }}
 """
 
-    if a_needs_pack:
-        code += f"""
-alignas(64) static {input_type} A_pack[{a_workspace}];
-static long a_panel_offsets[{max_a_panels}];
-static long a_panel_sizes[{max_a_panels}];
-"""
     if b_needs_pack:
         code += f"""
 alignas(64) static {input_type} B_pack[{b_workspace}];
@@ -212,11 +242,36 @@ static constexpr int AUTOGEMM_COPY_UNROLL_N = {spec.tile.n_vl};
 extern "C" int {driver_func_name}(const long M, const long N, const long K, const float alpha, const {input_type} *A, const {input_type} *B, const float beta, {output_type} *C, const long lda, const long ldb, const long ldc)
 {{
     const uint64_t total_start_ns = autogemm_now_ns();
+    autogemm_reset_alloc_state();
     const {input_type} *sa = nullptr;
     const {input_type} *sb = nullptr;
     long lda_kernel = 0;
     long ldb_kernel = 0;
-
+"""
+    cleanup_code = ""
+    if a_needs_pack:
+        code += f"""
+    {input_type} *A_pack = nullptr;
+    long *a_panel_offsets = nullptr;
+    long *a_panel_sizes = nullptr;
+    if (M > 0) {{
+        const unsigned long a_pack_elems = static_cast<unsigned long>(M) * static_cast<unsigned long>({GEMM_Q});
+        const unsigned long max_a_panels = static_cast<unsigned long>((M + {GEMM_P} - 1) / {GEMM_P});
+        A_pack = static_cast<{input_type}*>(autogemm_alloc_bytes(sizeof({input_type}) * a_pack_elems));
+        a_panel_offsets = static_cast<long*>(autogemm_alloc_bytes(sizeof(long) * max_a_panels));
+        a_panel_sizes = static_cast<long*>(autogemm_alloc_bytes(sizeof(long) * max_a_panels));
+        if (A_pack == nullptr || a_panel_offsets == nullptr || a_panel_sizes == nullptr) {{
+            autogemm_free_bytes(A_pack);
+            autogemm_free_bytes(a_panel_offsets);
+            autogemm_free_bytes(a_panel_sizes);
+            return -1;
+        }}
+    }}
+"""
+        cleanup_code = """
+    autogemm_free_bytes(A_pack);
+    autogemm_free_bytes(a_panel_offsets);
+    autogemm_free_bytes(a_panel_sizes);
 """
     if a_needs_pack:
         code += f"""
@@ -266,6 +321,7 @@ extern "C" int {driver_func_name}(const long M, const long N, const long K, cons
     }}
 """
     code += f"""
+{cleanup_code}
     autogemm_profile.total_ms += autogemm_elapsed_ms(total_start_ns, autogemm_now_ns());
     return 0;
 }}
