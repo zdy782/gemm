@@ -1056,7 +1056,7 @@ def build_bundle(pack: str, m_vl: int, n_vl: int, output_dir: Path) -> Path:
     _validate_hosted_toolchain()
     assert_valid_tile_combo(m_vl, n_vl)
     pack_a, pack_b = _pack_flags(pack)
-    variant_dir = _variant_dir(output_dir, pack, m_vl, n_vl)
+    variant_dir = _variant_dir(output_dir.resolve(), pack, m_vl, n_vl)
     if variant_dir.exists():
         shutil.rmtree(variant_dir)
     for subdir in ("gen", "obj", "lib", "bin"):
