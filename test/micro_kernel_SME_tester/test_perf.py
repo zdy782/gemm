@@ -58,24 +58,31 @@ def pack_label(pack_a: bool, pack_b: bool, func_name: str) -> str:
         return f"{func_name}_packb"
     return "autogemm_nopacking"
 
-def generate_test_cases_by_trans() -> List[Dict]:
+def generate_test_case_groups_by_trans() -> Dict[str, List[Dict]]:
     trans_pairs = [("N", "N"), ("N", "T"), ("T", "N"), ("T", "T")]
     cases_by_trans = {f"{ta}{tb}": [] for ta, tb in trans_pairs}
-
     SIZES_S = [16, 24, 32, 48]
-    K_LIST = [16, 24, 32, 48]
+    k_list = [16, 24, 32, 48, 64, 96]
+    selected_sizes = [
+        (16, 64), (24, 96), (32, 100), (48, 128), (64, 192),
+        (96, 256), (128, 300), (192, 384), (256, 512), (512, 768),
+        (64, 16), (96, 24), (100, 32), (128, 48), (192, 64),
+        (256, 96), (300, 128), (384, 192), (512, 256), (768, 512),
+    ]
+    verybig_n_m_list = [28, 64, 128]
+    verybig_n_n_list = [500, 1000, 1536]
+    verybig_n_k_list = [16, 32]
+    verybig_m_m_list = [500, 1000, 1536]
+    verybig_m_n_list = [28, 64, 128]
+    verybig_m_k_list = [16, 32]
+    verybig_k_m_list = [64, 128, 256]
+    verybig_k_n_list = [64, 128, 256]
+    verybig_k_k_list = [256, 300, 512]
 
     def label(x: int) -> str:
         return "S" if x in SIZES_S else "L"
 
-    selected_sizes = [
-        (16, 64), (24, 96), (32, 100), (48, 128), (64, 192),
-        (96, 256), (128, 300), (256, 512), (512, 768),
-        (64, 16), (96, 24), (100, 32), (128, 48), (192, 64),
-        (256, 96), (300, 128), (512, 256), (768, 512)
-    ]
-
-    for k in K_LIST:
+    for k in k_list:
         for m, n in selected_sizes:
             shape_type = f"{label(m)}{label(n)}S"
             for ta, tb in trans_pairs:
@@ -84,41 +91,41 @@ def generate_test_cases_by_trans() -> List[Dict]:
                 )
 
     # verybigN
-    for m in [28, 64]:
-        for n in [500, 1000]:
-            for k in [16, 32]:
+    for m in verybig_n_m_list:
+        for n in verybig_n_n_list:
+            for k in verybig_n_k_list:
                 for ta, tb in trans_pairs:
                     cases_by_trans[f"{ta}{tb}"].append(
                         {"m": m, "n": n, "k": k, "transa": ta, "transb": tb, "type": "verybigN"}
                     )
 
     # verybigM
-    for m in [500, 1000]:
-        for n in [28, 64]:
-            for k in [16, 32]:
+    for m in verybig_m_m_list:
+        for n in verybig_m_n_list:
+            for k in verybig_m_k_list:
                 for ta, tb in trans_pairs:
                     cases_by_trans[f"{ta}{tb}"].append(
                         {"m": m, "n": n, "k": k, "transa": ta, "transb": tb, "type": "verybigM"}
                     )
 
     # verybigK
-    for m in [64, 128]:
-        for n in [64, 128]:
-            for k in [256, 300]:
+    for m in verybig_k_m_list:
+        for n in verybig_k_n_list:
+            for k in verybig_k_k_list:
                 for ta, tb in trans_pairs:
                     cases_by_trans[f"{ta}{tb}"].append(
                         {"m": m, "n": n, "k": k, "transa": ta, "transb": tb, "type": "verybigK"}
                     )
 
-    final_cases = []
-    for cases in cases_by_trans.values():
+    grouped_cases = {}
+    for trans_key, cases in cases_by_trans.items():
         unique_dict = {}
         for c in cases:
             key = (c["m"], c["n"], c["k"], c["transa"], c["transb"])
             unique_dict[key] = c
-        final_cases.extend(unique_dict.values())
+        grouped_cases[trans_key] = list(unique_dict.values())
 
-    return final_cases
+    return grouped_cases
 
 def run_test_case(case: Dict, m_vl: int, n_vl: int, data_type: str, pack_a: bool, pack_b: bool) -> float:
     m, n, k = case["m"], case["n"], case["k"]
@@ -163,14 +170,22 @@ def run_blas_case(case: Dict, blas_binary: str) -> float:
     except Exception:
         return 0.0
 
-def run_evaluation(data_type: str, blas_binary: str, func_name: str, all_cases: List[Dict], pack_a: bool, pack_b: bool):
+def run_evaluation(
+    data_type: str,
+    blas_binary: str,
+    func_name: str,
+    trans_key: str,
+    all_cases: List[Dict],
+    pack_a: bool,
+    pack_b: bool,
+):
     """
     Core evaluation loop. Runs all test cases for a specific data type (e.g., bf16, fp16).
     """
     total_cases = len(all_cases)
     current_pack_label = pack_label(pack_a, pack_b, func_name)
     print("\n" + "=" * 100)
-    print(f" >>> Starting Evaluation for {data_type.upper()} ({blas_binary}) <<<")
+    print(f" >>> Starting Evaluation for {data_type.upper()} {trans_key} ({blas_binary}) <<<")
     print("=" * 100)
 
     results = []
@@ -239,20 +254,9 @@ def run_evaluation(data_type: str, blas_binary: str, func_name: str, all_cases: 
         export_df = df[ordered_cols].copy()
         timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
 
-        # Include data type in output file names
-        excel_file = f"sme_kernel_{data_type}_wide_format_{timestamp}.xlsx"
-        csv_file = f"sme_kernel_{data_type}_wide_format_{timestamp}.csv"
-
-        # Export 1: Excel
-        try:
-            export_df.to_excel(excel_file, index=False)
-            print(f"\n[File] Excel saved to: {excel_file}")
-        except Exception as e:
-            print(f"\n[Notice] Failed to save Excel, openpyxl may be missing. Skipping Excel export. Error: {e}")
-
-        # Export 2: Flat CSV fallback
+        csv_file = f"sme_kernel_{data_type}_{trans_key.lower()}_{current_pack_label}_{timestamp}.csv"
         export_df.to_csv(csv_file, index=False)
-        print(f"[File] Flat CSV saved to: {csv_file}")
+        print(f"[File] CSV saved to: {csv_file}")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -263,9 +267,14 @@ def main():
     print("=" * 100)
     print("  SME Kernel vs BLAS (Automated BF16 & FP16 Testing)")
     print("=" * 100)
+    print("[INFO] test_perf runs perf-only kernels; correctness is skipped via --perf_only")
 
-    all_cases = generate_test_cases_by_trans()
-    print(f"Total test cases per precision type: {len(all_cases)}")
+    cases_by_trans = generate_test_case_groups_by_trans()
+    total_cases = sum(len(cases) for cases in cases_by_trans.values())
+    print("Perf suite: expanded")
+    print(f"Total test cases per precision type: {total_cases}")
+    for trans_key, trans_cases in cases_by_trans.items():
+        print(f"  - {trans_key}: {len(trans_cases)} cases")
 
     # Define the testing configurations: precision, executable path, and output function name
     test_configs = [
@@ -276,14 +285,16 @@ def main():
     try:
         # Loop over configurations to automatically test bf16 and then fp16
         for config in test_configs:
-            run_evaluation(
-                data_type=config["data_type"],
-                blas_binary=config["blas_binary"],
-                func_name=config["func_name"],
-                all_cases=all_cases,
-                pack_a=args.pack_a,
-                pack_b=args.pack_b,
-            )
+            for trans_key in ("NN", "NT", "TN", "TT"):
+                run_evaluation(
+                    data_type=config["data_type"],
+                    blas_binary=config["blas_binary"],
+                    func_name=config["func_name"],
+                    trans_key=trans_key,
+                    all_cases=cases_by_trans[trans_key],
+                    pack_a=args.pack_a,
+                    pack_b=args.pack_b,
+                )
 
     except KeyboardInterrupt:
         print("\n[Interrupted by user] Halting execution and keeping collected data from earlier evaluations...")
