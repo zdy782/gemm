@@ -10,7 +10,7 @@ from typing import Dict, List
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 BUNDLE_BUILDER = REPO_ROOT / "src" / "micro_kernel_SME" / "half" / "build_blas_bundle.py"
-BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v1"
+BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v2"
 
 CONFIG = {
     "numactl": ["numactl", "-m", "15"],
@@ -47,6 +47,9 @@ def run_command(cmd: List[str], extra_env: Dict[str, str] = None) -> str:
         )
         return result.stdout
     except subprocess.CalledProcessError as e:
+        captured_output = e.stdout.strip() if e.stdout else ""
+        if captured_output:
+            raise RuntimeError(f"Command execution failed: {e}\n{captured_output}") from e
         raise RuntimeError(f"Command execution failed: {e}") from e
 
 

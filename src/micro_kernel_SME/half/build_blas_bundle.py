@@ -35,7 +35,7 @@ TRANSPOSE_PAIRS: Tuple[Tuple[str, str], ...] = (("N", "N"), ("N", "T"), ("T", "N
 PRECISIONS: Tuple[str, ...] = ("bf16", "fp16")
 PLACEHOLDER_DIM = 256
 SHARED_LIB_NAME = "libautogemm_half.so"
-BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v1"
+BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v2"
 CC = os.environ.get("CC", "clang")
 CXX = os.environ.get("CXX", "clang++")
 AUTOGEMM_TARGET_TRIPLE = os.environ.get("AUTOGEMM_TARGET_TRIPLE", "")
@@ -555,7 +555,7 @@ def _generate_benchmark_cpp(selected_backends: Sequence[BackendSpec], data_type:
         )
     dispatch_lines.append("    return nullptr;\n")
     dispatch_code = "".join(dispatch_lines)
-    return f"""
+    return rf"""
 #include <arm_neon.h>
 #include <cstdint>
 #include <cstddef>
