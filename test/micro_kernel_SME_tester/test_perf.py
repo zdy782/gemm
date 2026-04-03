@@ -127,6 +127,14 @@ def generate_test_case_groups_by_trans() -> Dict[str, List[Dict]]:
 
     return grouped_cases
 
+
+def generate_test_cases() -> List[Dict]:
+    cases_by_trans = generate_test_case_groups_by_trans()
+    ordered_cases = []
+    for trans_key in ("NN", "NT", "TN", "TT"):
+        ordered_cases.extend(cases_by_trans[trans_key])
+    return ordered_cases
+
 def run_test_case(case: Dict, m_vl: int, n_vl: int, data_type: str, pack_a: bool, pack_b: bool) -> float:
     m, n, k = case["m"], case["n"], case["k"]
     ta, tb = case["transa"], case["transb"]
@@ -174,7 +182,6 @@ def run_evaluation(
     data_type: str,
     blas_binary: str,
     func_name: str,
-    trans_key: str,
     all_cases: List[Dict],
     pack_a: bool,
     pack_b: bool,
@@ -185,7 +192,7 @@ def run_evaluation(
     total_cases = len(all_cases)
     current_pack_label = pack_label(pack_a, pack_b, func_name)
     print("\n" + "=" * 100)
-    print(f" >>> Starting Evaluation for {data_type.upper()} {trans_key} ({blas_binary}) <<<")
+    print(f" >>> Starting Evaluation for {data_type.upper()} {current_pack_label} ({blas_binary}) <<<")
     print("=" * 100)
 
     results = []
@@ -254,15 +261,13 @@ def run_evaluation(
         export_df = df[ordered_cols].copy()
         timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
 
-        csv_file = f"sme_kernel_{data_type}_{trans_key.lower()}_{current_pack_label}_{timestamp}.csv"
+        csv_file = f"sme_kernel_{data_type}_{current_pack_label}_{timestamp}.csv"
         export_df.to_csv(csv_file, index=False)
         print(f"[File] CSV saved to: {csv_file}")
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pack_a", action="store_true")
-    parser.add_argument("--pack_b", action="store_true")
-    args = parser.parse_args()
+    parser.parse_args()
 
     print("=" * 100)
     print("  SME Kernel vs BLAS (Automated BF16 & FP16 Testing)")
@@ -270,30 +275,37 @@ def main():
     print("[INFO] test_perf runs perf-only kernels; correctness is skipped via --perf_only")
 
     cases_by_trans = generate_test_case_groups_by_trans()
-    total_cases = sum(len(cases) for cases in cases_by_trans.values())
+    all_cases = generate_test_cases()
+    total_cases = len(all_cases)
     print("Perf suite: expanded")
     print(f"Total test cases per precision type: {total_cases}")
     for trans_key, trans_cases in cases_by_trans.items():
         print(f"  - {trans_key}: {len(trans_cases)} cases")
+    print("[INFO] test_perf runs all four pack modes: nopack, packa, packb, packab")
 
     # Define the testing configurations: precision, executable path, and output function name
     test_configs = [
         {"data_type": "bf16", "blas_binary": str(SCRIPT_DIR / "sbgemm.goto"), "func_name": "sbgemm"},
         {"data_type": "fp16", "blas_binary": str(SCRIPT_DIR / "shgemm.goto"), "func_name": "shgemm"},
     ]
+    pack_modes = [
+        (False, False),
+        (True, False),
+        (False, True),
+        (True, True),
+    ]
 
     try:
         # Loop over configurations to automatically test bf16 and then fp16
         for config in test_configs:
-            for trans_key in ("NN", "NT", "TN", "TT"):
+            for pack_a, pack_b in pack_modes:
                 run_evaluation(
                     data_type=config["data_type"],
                     blas_binary=config["blas_binary"],
                     func_name=config["func_name"],
-                    trans_key=trans_key,
-                    all_cases=cases_by_trans[trans_key],
-                    pack_a=args.pack_a,
-                    pack_b=args.pack_b,
+                    all_cases=all_cases,
+                    pack_a=pack_a,
+                    pack_b=pack_b,
                 )
 
     except KeyboardInterrupt:
