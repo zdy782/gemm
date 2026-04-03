@@ -1,3 +1,5 @@
+from typing import Optional
+
 from .gemm_config import resolve_model
 from .generate_gemm_driver import generate_gemm_driver
 from .global_config import assert_valid_tile_combo, get_tolerance_value
@@ -21,6 +23,41 @@ def build_profile_symbol_names(uniq_id: str):
     return (
         f"reset_profile_{uniq_id}",
         f"get_profile_{uniq_id}",
+    )
+
+
+def _format_cpp_float(value: float) -> str:
+    text = format(value, ".9g")
+    if "." not in text and "e" not in text.lower():
+        text += ".0"
+    return f"{text}f"
+
+
+def _resolve_test_scale_cases(alpha: Optional[float], beta: Optional[float]):
+    if alpha is None and beta is None:
+        return (
+            1.0,
+            1.0,
+            [
+                (1.0, 1.0, "alpha=1,beta=1"),
+                (1.0, 0.0, "alpha=1,beta=0"),
+                (0.5, 1.0, "alpha=0.5,beta=1"),
+                (0.5, 0.25, "alpha=0.5,beta=0.25"),
+            ],
+        )
+
+    selected_alpha = 1.0 if alpha is None else alpha
+    selected_beta = 1.0 if beta is None else beta
+    return (
+        selected_alpha,
+        selected_beta,
+        [
+            (
+                selected_alpha,
+                selected_beta,
+                f"alpha={selected_alpha:g},beta={selected_beta:g}",
+            )
+        ],
     )
 
 
@@ -143,6 +180,8 @@ def generate_sme_test_cpp(
     pack_b: bool = False,
     profile_pack: bool = False,
     validate_results: bool = True,
+    alpha: Optional[float] = None,
+    beta: Optional[float] = None,
 ):
     """Generate C++ test file for SME GEMM kernel
 
@@ -200,6 +239,11 @@ def generate_sme_test_cpp(
 
     _, entry_func_name = build_symbol_names(spec, uniq_id)
     reset_profile_name, get_profile_name = build_profile_symbol_names(uniq_id)
+    alpha_bench, beta_bench, scale_cases = _resolve_test_scale_cases(alpha, beta)
+    scale_cases_cpp = "\n".join(
+        f'        {{{_format_cpp_float(case_alpha)}, {_format_cpp_float(case_beta)}, "{label}"}},'
+        for case_alpha, case_beta, label in scale_cases
+    )
 
     cc_code = test_cpp_prelude(guard_name, input_type_include)
 
@@ -260,8 +304,8 @@ int main()
     {output_type} *ourC = static_cast<{output_type}*>(_mm_malloc(64, {c_size} * sizeof({output_type})));
     bool all_passed = true;
     const bool validate_results = {"true" if validate_results else "false"};
-    const float alpha_bench = 1.0f;
-    const float beta_bench = 1.0f;
+    const float alpha_bench = {_format_cpp_float(alpha_bench)};
+    const float beta_bench = {_format_cpp_float(beta_bench)};
 
     struct ScaleCase {{
         float alpha;
@@ -269,10 +313,7 @@ int main()
         const char* label;
     }};
     const ScaleCase scale_cases[] = {{
-        {{1.0f, 1.0f, "alpha=1,beta=1"}},
-        {{1.0f, 0.0f, "alpha=1,beta=0"}},
-        {{0.5f, 1.0f, "alpha=0.5,beta=1"}},
-        {{0.5f, 0.25f, "alpha=0.5,beta=0.25"}},
+{scale_cases_cpp}
     }};
 
     test_utils::init(A, {a_size});

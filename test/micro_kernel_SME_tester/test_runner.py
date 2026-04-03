@@ -138,6 +138,8 @@ def run_single_test(
     pack_b=False,
     profile_pack=False,
     validate_results=True,
+    alpha: Optional[float] = None,
+    beta: Optional[float] = None,
     verbose=True,
     keep_tmp=False,
 ):
@@ -194,6 +196,8 @@ def run_single_test(
             pack_b,
             profile_pack,
             validate_results,
+            alpha,
+            beta,
         )
         if not cpp_code:
             if verbose:

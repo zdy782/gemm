@@ -21,6 +21,8 @@ parser.add_argument("--pack_a", action="store_true")
 parser.add_argument("--pack_b", action="store_true")
 parser.add_argument("--profile_pack", action="store_true")
 parser.add_argument("--perf_only", action="store_true")
+parser.add_argument("--alpha", type=float, default=None)
+parser.add_argument("--beta", type=float, default=None)
 
 args = parser.parse_args()
 
@@ -49,6 +51,8 @@ success = run_single_test(
     pack_b=args.pack_b,
     profile_pack=args.profile_pack,
     validate_results=not args.perf_only,
+    alpha=args.alpha,
+    beta=args.beta,
     verbose=True
 )
 
