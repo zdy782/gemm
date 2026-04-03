@@ -35,6 +35,7 @@ TRANSPOSE_PAIRS: Tuple[Tuple[str, str], ...] = (("N", "N"), ("N", "T"), ("T", "N
 PRECISIONS: Tuple[str, ...] = ("bf16", "fp16")
 PLACEHOLDER_DIM = 256
 SHARED_LIB_NAME = "libautogemm_half.so"
+BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v1"
 CC = os.environ.get("CC", "clang")
 CXX = os.environ.get("CXX", "clang++")
 AUTOGEMM_TARGET_TRIPLE = os.environ.get("AUTOGEMM_TARGET_TRIPLE", "")
@@ -534,8 +535,27 @@ extern "C" void cblas_shgemm(
 """
 
 
-def _generate_benchmark_cpp() -> str:
-    return r"""
+def _generate_benchmark_cpp(selected_backends: Sequence[BackendSpec], data_type: str) -> str:
+    input_type, include_block = _normalize_precision_input_type(data_type)
+    driver_decl_lines = "\n".join(
+        [
+            "extern \"C\" int "
+            f"{backend.driver_name}(const long M, const long N, const long K, const float alpha, "
+            f"const {input_type} *A, const {input_type} *B, const float beta, float *C, "
+            "const long lda, const long ldb, const long ldc);"
+            for backend in selected_backends
+        ]
+    )
+    dispatch_lines = []
+    for backend in selected_backends:
+        dispatch_lines.append(
+            f"    if (ta == '{backend.trans_a}' && tb == '{backend.trans_b}') {{\n"
+            f"        return {backend.driver_name};\n"
+            "    }\n"
+        )
+    dispatch_lines.append("    return nullptr;\n")
+    dispatch_code = "".join(dispatch_lines)
+    return f"""
 #include <arm_neon.h>
 #include <cstdint>
 #include <cstddef>
@@ -546,87 +566,23 @@ def _generate_benchmark_cpp() -> str:
 #include <ctime>
 #include <string>
 
-#ifdef AUTOGEMM_BF16
-#include <arm_bf16.h>
-using InputType = __bf16;
-extern "C" void sbgemm_(
-    const char *transa,
-    const char *transb,
-    const int *M,
-    const int *N,
-    const int *K,
-    const float *alpha,
-    const InputType *A,
-    const int *lda,
-    const InputType *B,
-    const int *ldb,
-    const float *beta,
-    float *C,
-    const int *ldc
-);
-extern "C" void cblas_sbgemm(
-    const int order,
-    const int transa,
-    const int transb,
-    const int M,
-    const int N,
-    const int K,
+{include_block}using InputType = {input_type};
+using DriverFn = int (*)(
+    const long M,
+    const long N,
+    const long K,
     const float alpha,
     const InputType *A,
-    const int lda,
     const InputType *B,
-    const int ldb,
     const float beta,
     float *C,
-    const int ldc
+    const long lda,
+    const long ldb,
+    const long ldc
 );
-#else
-using InputType = __fp16;
-extern "C" void shgemm_(
-    const char *transa,
-    const char *transb,
-    const int *M,
-    const int *N,
-    const int *K,
-    const float *alpha,
-    const InputType *A,
-    const int *lda,
-    const InputType *B,
-    const int *ldb,
-    const float *beta,
-    float *C,
-    const int *ldc
-);
-extern "C" void cblas_shgemm(
-    const int order,
-    const int transa,
-    const int transb,
-    const int M,
-    const int N,
-    const int K,
-    const float alpha,
-    const InputType *A,
-    const int lda,
-    const InputType *B,
-    const int ldb,
-    const float beta,
-    float *C,
-    const int ldc
-);
-#endif
+{driver_decl_lines}
 
-enum CBLAS_ORDER {
-    CblasRowMajor = 101,
-    CblasColMajor = 102,
-};
-
-enum CBLAS_TRANSPOSE {
-    CblasNoTrans = 111,
-    CblasTrans = 112,
-    CblasConjTrans = 113,
-};
-
-struct BenchArgs {
+struct BenchArgs {{
     int m = 256;
     int n = 256;
     int k = 256;
@@ -653,10 +609,23 @@ struct BenchArgs {
     char order = 'C';
     char transa = 'N';
     char transb = 'N';
-};
+}};
+
+struct ResolvedCall {{
+    DriverFn driver = nullptr;
+    const InputType *A = nullptr;
+    const InputType *B = nullptr;
+    float *C = nullptr;
+    long m = 0;
+    long n = 0;
+    long k = 0;
+    long lda = 0;
+    long ldb = 0;
+    long ldc = 0;
+}};
 
 #ifdef AUTOGEMM_BF16
-static inline InputType float_to_input(float value) {
+static inline InputType float_to_input(float value) {{
     uint32_t float_bits = 0;
     uint16_t bf16_bits = 0;
     InputType result;
@@ -664,154 +633,182 @@ static inline InputType float_to_input(float value) {
     bf16_bits = static_cast<uint16_t>(float_bits >> 16);
     std::memcpy(&result, &bf16_bits, sizeof(result));
     return result;
-}
+}}
 #else
-static inline InputType float_to_input(float value) {
+static inline InputType float_to_input(float value) {{
     return static_cast<InputType>(value);
-}
+}}
 #endif
 
 template <typename T>
-static T* alloc_aligned(std::size_t count) {
+static T* alloc_aligned(std::size_t count) {{
     void *ptr = nullptr;
-    if (posix_memalign(&ptr, 64, sizeof(T) * count) != 0) {
+    if (posix_memalign(&ptr, 64, sizeof(T) * count) != 0) {{
         return nullptr;
-    }
+    }}
     return static_cast<T*>(ptr);
-}
+}}
 
-static inline void fill_input(InputType *buffer, std::size_t count) {
-    for (std::size_t idx = 0; idx < count; ++idx) {
+static inline void fill_input(InputType *buffer, std::size_t count) {{
+    for (std::size_t idx = 0; idx < count; ++idx) {{
         float value = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
         buffer[idx] = float_to_input(value);
-    }
-}
+    }}
+}}
 
-static inline void fill_output(float *buffer, std::size_t count) {
-    for (std::size_t idx = 0; idx < count; ++idx) {
+static inline void fill_output(float *buffer, std::size_t count) {{
+    for (std::size_t idx = 0; idx < count; ++idx) {{
         buffer[idx] = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
-    }
-}
+    }}
+}}
 
-static inline char normalize_char(char value) {
+static inline char normalize_char(char value) {{
     return static_cast<char>(std::toupper(static_cast<unsigned char>(value)));
-}
+}}
 
-static inline bool is_transposed(char value) {
+static inline bool is_transposed(char value) {{
     const char normalized = normalize_char(value);
     return normalized != 'N' && normalized != 'R';
-}
+}}
 
-static inline std::size_t matrix_a_elements(const BenchArgs &args) {
+static inline std::size_t matrix_a_elements(const BenchArgs &args) {{
     const bool is_col_major = (args.api == 'F' || args.order == 'C');
     const int opposite_dim = (is_transposed(args.transa) == is_col_major) ? args.m : args.k;
     return static_cast<std::size_t>(opposite_dim) * static_cast<std::size_t>(args.lda);
-}
+}}
 
-static inline std::size_t matrix_b_elements(const BenchArgs &args) {
+static inline std::size_t matrix_b_elements(const BenchArgs &args) {{
     const bool is_col_major = (args.api == 'F' || args.order == 'C');
     const int opposite_dim = (is_transposed(args.transb) == is_col_major) ? args.k : args.n;
     return static_cast<std::size_t>(opposite_dim) * static_cast<std::size_t>(args.ldb);
-}
+}}
 
-static inline std::size_t matrix_c_elements(const BenchArgs &args) {
+static inline std::size_t matrix_c_elements(const BenchArgs &args) {{
     const bool is_col_major = (args.api == 'F' || args.order == 'C');
     const int opposite_dim = is_col_major ? args.n : args.m;
     return static_cast<std::size_t>(opposite_dim) * static_cast<std::size_t>(args.ldc);
-}
+}}
 
-static void resolve_leading_dimensions(BenchArgs *args) {
+static void resolve_leading_dimensions(BenchArgs *args) {{
     const bool is_col_major = (args->api == 'F' || args->order == 'C');
-    if (!args->has_lda) {
+    if (!args->has_lda) {{
         args->lda = (is_transposed(args->transa) == is_col_major) ? args->k : args->m;
-    }
-    if (!args->has_ldb) {
+    }}
+    if (!args->has_ldb) {{
         args->ldb = (is_transposed(args->transb) == is_col_major) ? args->n : args->k;
-    }
-    if (!args->has_ldc) {
+    }}
+    if (!args->has_ldc) {{
         args->ldc = is_col_major ? args->m : args->n;
-    }
-}
+    }}
+}}
 
-static void parse_args(int argc, char **argv, BenchArgs *args) {
-    for (int idx = 1; idx < argc; ++idx) {
+static void parse_args(int argc, char **argv, BenchArgs *args) {{
+    for (int idx = 1; idx < argc; ++idx) {{
         std::string option = argv[idx];
-        auto require_value = [&](const char *name) -> const char* {
-            if (idx + 1 >= argc) {
+        auto require_value = [&](const char *name) -> const char* {{
+            if (idx + 1 >= argc) {{
                 std::fprintf(stderr, "Missing value for %s\n", name);
                 std::exit(1);
-            }
+            }}
             return argv[++idx];
-        };
+        }};
 
-        if (option == "-m") {
+        if (option == "-m") {{
             args->m = std::atoi(require_value("-m"));
             args->has_m = true;
-        } else if (option == "-n") {
+        }} else if (option == "-n") {{
             args->n = std::atoi(require_value("-n"));
             args->has_n = true;
-        } else if (option == "-k") {
+        }} else if (option == "-k") {{
             args->k = std::atoi(require_value("-k"));
             args->has_k = true;
-        } else if (option == "-lda") {
+        }} else if (option == "-lda") {{
             args->lda = std::atoi(require_value("-lda"));
             args->has_lda = true;
-        } else if (option == "-ldb") {
+        }} else if (option == "-ldb") {{
             args->ldb = std::atoi(require_value("-ldb"));
             args->has_ldb = true;
-        } else if (option == "-ldc") {
+        }} else if (option == "-ldc") {{
             args->ldc = std::atoi(require_value("-ldc"));
             args->has_ldc = true;
-        } else if (option == "-from") {
+        }} else if (option == "-from") {{
             args->from = std::atoi(require_value("-from"));
-        } else if (option == "-to") {
+        }} else if (option == "-to") {{
             args->to = std::atoi(require_value("-to"));
-        } else if (option == "-step") {
+        }} else if (option == "-step") {{
             args->step = std::atoi(require_value("-step"));
-        } else if (option == "-loops") {
+        }} else if (option == "-loops") {{
             args->loops = std::atoi(require_value("-loops"));
-        } else if (option == "-innerLoops") {
+        }} else if (option == "-innerLoops") {{
             args->inner_loops = std::atoi(require_value("-innerLoops"));
-        } else if (option == "-nthreads") {
+        }} else if (option == "-nthreads") {{
             args->nthreads = std::atoi(require_value("-nthreads"));
-        } else if (option == "-alphaR") {
+        }} else if (option == "-alphaR") {{
             args->alpha_r = std::strtof(require_value("-alphaR"), nullptr);
-        } else if (option == "-alphaI") {
+        }} else if (option == "-alphaI") {{
             args->alpha_i = std::strtof(require_value("-alphaI"), nullptr);
-        } else if (option == "-betaR") {
+        }} else if (option == "-betaR") {{
             args->beta_r = std::strtof(require_value("-betaR"), nullptr);
-        } else if (option == "-betaI") {
+        }} else if (option == "-betaI") {{
             args->beta_i = std::strtof(require_value("-betaI"), nullptr);
-        } else if (option == "-api") {
+        }} else if (option == "-api") {{
             args->api = normalize_char(*require_value("-api"));
-        } else if (option == "-order") {
+        }} else if (option == "-order") {{
             args->order = normalize_char(*require_value("-order"));
-        } else if (option == "-transa") {
+        }} else if (option == "-transa") {{
             args->transa = normalize_char(*require_value("-transa"));
-        } else if (option == "-transb") {
+        }} else if (option == "-transb") {{
             args->transb = normalize_char(*require_value("-transb"));
-        } else {
+        }} else {{
             std::fprintf(stderr, "Unknown option: %s\n", option.c_str());
             std::exit(1);
-        }
-    }
-}
+        }}
+    }}
+}}
 
-static inline double now_seconds() {
-    timespec ts = {0, 0};
+static inline double now_seconds() {{
+    timespec ts = {{0, 0}};
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) * 1.0e-9;
-}
+}}
 
-static inline int cblas_order(char order) {
-    return order == 'R' ? CblasRowMajor : CblasColMajor;
-}
+static DriverFn resolve_driver(char ta, char tb) {{
+{dispatch_code}
+}}
 
-static inline int cblas_transpose(char trans) {
-    return is_transposed(trans) ? CblasTrans : CblasNoTrans;
-}
+static ResolvedCall resolve_call(const BenchArgs &args, const InputType *a, const InputType *b, float *c) {{
+    ResolvedCall resolved;
+    const char ta = normalize_char(args.transa);
+    const char tb = normalize_char(args.transb);
+    const bool row_major_cblas = (args.api == 'C' && args.order == 'R');
+    if (row_major_cblas) {{
+        resolved.driver = resolve_driver(tb, ta);
+        resolved.A = b;
+        resolved.B = a;
+        resolved.C = c;
+        resolved.m = args.n;
+        resolved.n = args.m;
+        resolved.k = args.k;
+        resolved.lda = args.ldb;
+        resolved.ldb = args.lda;
+        resolved.ldc = args.ldc;
+        return resolved;
+    }}
 
-static void run_single_case(const BenchArgs &args) {
+    resolved.driver = resolve_driver(ta, tb);
+    resolved.A = a;
+    resolved.B = b;
+    resolved.C = c;
+    resolved.m = args.m;
+    resolved.n = args.n;
+    resolved.k = args.k;
+    resolved.lda = args.lda;
+    resolved.ldb = args.ldb;
+    resolved.ldc = args.ldc;
+    return resolved;
+}}
+
+static void run_single_case(const BenchArgs &args) {{
     BenchArgs resolved = args;
     resolve_leading_dimensions(&resolved);
 
@@ -819,60 +816,86 @@ static void run_single_case(const BenchArgs &args) {
     InputType *b = alloc_aligned<InputType>(matrix_b_elements(resolved));
     float *c = alloc_aligned<float>(matrix_c_elements(resolved));
     float *c_initial = alloc_aligned<float>(matrix_c_elements(resolved));
-    if (a == nullptr || b == nullptr || c == nullptr || c_initial == nullptr) {
+    if (a == nullptr || b == nullptr || c == nullptr || c_initial == nullptr) {{
         std::fprintf(stderr, "Allocation failure\n");
         std::free(a);
         std::free(b);
         std::free(c);
         std::free(c_initial);
         std::exit(1);
-    }
+    }}
 
     fill_input(a, matrix_a_elements(resolved));
     fill_input(b, matrix_b_elements(resolved));
     fill_output(c_initial, matrix_c_elements(resolved));
+    const ResolvedCall call = resolve_call(resolved, a, b, c);
+    if (call.driver == nullptr) {{
+        std::fprintf(
+            stderr,
+            "autogemm benchmark: unsupported transpose pair transa=%c transb=%c api=%c order=%c\n",
+            resolved.transa,
+            resolved.transb,
+            resolved.api,
+            resolved.order
+        );
+        std::free(a);
+        std::free(b);
+        std::free(c);
+        std::free(c_initial);
+        std::exit(1);
+    }}
 
     const double flop_count = 2.0 * static_cast<double>(resolved.m) * static_cast<double>(resolved.n) * static_cast<double>(resolved.k);
     double total_time = 0.0;
+    constexpr int warmup_loops = 20;
 
-    for (int loop = 0; loop < resolved.loops; ++loop) {
+    for (int loop = 0; loop < resolved.loops; ++loop) {{
         std::memcpy(c, c_initial, matrix_c_elements(resolved) * sizeof(float));
+        for (int warmup = 0; warmup < warmup_loops; ++warmup) {{
+            const int status = call.driver(
+                call.m, call.n, call.k,
+                resolved.alpha_r,
+                call.A,
+                call.B,
+                resolved.beta_r,
+                call.C,
+                call.lda,
+                call.ldb,
+                call.ldc
+            );
+            if (status != 0) {{
+                std::fprintf(stderr, "autogemm benchmark: warmup driver failed with status=%d\n", status);
+                std::free(a);
+                std::free(b);
+                std::free(c);
+                std::free(c_initial);
+                std::exit(1);
+            }}
+        }}
         const double start = now_seconds();
-        for (int inner = 0; inner < resolved.inner_loops; ++inner) {
-#ifdef AUTOGEMM_BF16
-            if (resolved.api == 'F') {
-                sbgemm_(
-                    &resolved.transa, &resolved.transb, &resolved.m, &resolved.n, &resolved.k,
-                    &resolved.alpha_r, a, &resolved.lda, b, &resolved.ldb, &resolved.beta_r, c, &resolved.ldc
-                );
-            } else {
-                cblas_sbgemm(
-                    cblas_order(resolved.order),
-                    cblas_transpose(resolved.transa),
-                    cblas_transpose(resolved.transb),
-                    resolved.m, resolved.n, resolved.k,
-                    resolved.alpha_r, a, resolved.lda, b, resolved.ldb, resolved.beta_r, c, resolved.ldc
-                );
-            }
-#else
-            if (resolved.api == 'F') {
-                shgemm_(
-                    &resolved.transa, &resolved.transb, &resolved.m, &resolved.n, &resolved.k,
-                    &resolved.alpha_r, a, &resolved.lda, b, &resolved.ldb, &resolved.beta_r, c, &resolved.ldc
-                );
-            } else {
-                cblas_shgemm(
-                    cblas_order(resolved.order),
-                    cblas_transpose(resolved.transa),
-                    cblas_transpose(resolved.transb),
-                    resolved.m, resolved.n, resolved.k,
-                    resolved.alpha_r, a, resolved.lda, b, resolved.ldb, resolved.beta_r, c, resolved.ldc
-                );
-            }
-#endif
-        }
+        for (int inner = 0; inner < resolved.inner_loops; ++inner) {{
+            const int status = call.driver(
+                call.m, call.n, call.k,
+                resolved.alpha_r,
+                call.A,
+                call.B,
+                resolved.beta_r,
+                call.C,
+                call.lda,
+                call.ldb,
+                call.ldc
+            );
+            if (status != 0) {{
+                std::fprintf(stderr, "autogemm benchmark: timed driver failed with status=%d\n", status);
+                std::free(a);
+                std::free(b);
+                std::free(c);
+                std::free(c_initial);
+                std::exit(1);
+            }}
+        }}
         total_time += (now_seconds() - start) / static_cast<double>(resolved.inner_loops);
-    }
+    }}
 
     const double avg_time = total_time / static_cast<double>(resolved.loops);
     const double avg_mflops = flop_count / avg_time / 1.0e6;
@@ -893,48 +916,48 @@ static void run_single_case(const BenchArgs &args) {
     std::free(b);
     std::free(c);
     std::free(c_initial);
-}
+}}
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv) {{
     BenchArgs args;
     parse_args(argc, argv, &args);
 
-    if (args.alpha_i != 0.0f || args.beta_i != 0.0f) {
+    if (args.alpha_i != 0.0f || args.beta_i != 0.0f) {{
         std::fprintf(stderr, "Complex alpha or beta is unsupported for real half GEMM\n");
         return 1;
-    }
-    if (args.nthreads != 1) {
+    }}
+    if (args.nthreads != 1) {{
         std::fprintf(stderr, "Warning: -nthreads=%d requested, but this benchmark runs single-threaded\n", args.nthreads);
-    }
-    if (args.api != 'F' && args.api != 'C') {
+    }}
+    if (args.api != 'F' && args.api != 'C') {{
         std::fprintf(stderr, "Invalid api=%c\n", args.api);
         return 1;
-    }
-    if (args.order != 'C' && args.order != 'R') {
+    }}
+    if (args.order != 'C' && args.order != 'R') {{
         std::fprintf(stderr, "Invalid order=%c\n", args.order);
         return 1;
-    }
-    if (args.step <= 0) {
+    }}
+    if (args.step <= 0) {{
         std::fprintf(stderr, "Invalid step=%d\n", args.step);
         return 1;
-    }
+    }}
 
     std::srand(0);
-    for (int current = args.from; current <= args.to; current += args.step) {
+    for (int current = args.from; current <= args.to; current += args.step) {{
         BenchArgs run_args = args;
-        if (!run_args.has_m) {
+        if (!run_args.has_m) {{
             run_args.m = current;
-        }
-        if (!run_args.has_n) {
+        }}
+        if (!run_args.has_n) {{
             run_args.n = current;
-        }
-        if (!run_args.has_k) {
+        }}
+        if (!run_args.has_k) {{
             run_args.k = current;
-        }
+        }}
         run_single_case(run_args);
-    }
+    }}
     return 0;
-}
+}}
 """
 
 
@@ -1018,7 +1041,7 @@ def _compile_wrapper_and_library(variant_dir: Path, backends: Sequence[BackendSp
     return lib_path
 
 
-def _compile_benchmark_executable(variant_dir: Path, data_type: str) -> Path:
+def _compile_benchmark_executable(variant_dir: Path, data_type: str, backends: Sequence[BackendSpec]) -> Path:
     gen_dir = variant_dir / "gen"
     bin_dir = variant_dir / "bin"
     bench_src = gen_dir / "benchmark_gemm.cpp"
@@ -1026,9 +1049,10 @@ def _compile_benchmark_executable(variant_dir: Path, data_type: str) -> Path:
     bench_path = bin_dir / bench_name
     define_flag = "-DAUTOGEMM_BF16" if data_type == "bf16" else "-DAUTOGEMM_FP16"
     march_flag = MARCH_FLAGS["bf16"] if data_type == "bf16" else MARCH_FLAGS["fp16"]
+    selected_backends = [backend for backend in backends if backend.data_type == data_type]
 
     if not bench_src.exists():
-        _write_file(bench_src, _generate_benchmark_cpp())
+        _write_file(bench_src, _generate_benchmark_cpp(selected_backends, data_type))
 
     _run_command(
         [
@@ -1072,8 +1096,9 @@ def build_bundle(pack: str, m_vl: int, n_vl: int, output_dir: Path) -> Path:
         objects.append(_compile_pack_object(variant_dir, data_type))
 
     _compile_wrapper_and_library(variant_dir, backends, objects)
-    _compile_benchmark_executable(variant_dir, "bf16")
-    _compile_benchmark_executable(variant_dir, "fp16")
+    _compile_benchmark_executable(variant_dir, "bf16", backends)
+    _compile_benchmark_executable(variant_dir, "fp16", backends)
+    _write_file(variant_dir / "bundle_version.txt", BUNDLE_LAYOUT_VERSION + "\n")
     return variant_dir
 
 

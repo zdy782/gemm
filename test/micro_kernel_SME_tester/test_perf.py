@@ -10,6 +10,7 @@ from typing import Dict, List
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 BUNDLE_BUILDER = REPO_ROOT / "src" / "micro_kernel_SME" / "half" / "build_blas_bundle.py"
+BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v1"
 
 CONFIG = {
     "numactl": ["numactl", "-m", "15"],
@@ -80,10 +81,16 @@ def benchmark_binary_for_variant(pack_a: bool, pack_b: bool, m_vl: int, n_vl: in
     return bundle_dir / "bin" / binary_name
 
 
+def bundle_version_file(pack_a: bool, pack_b: bool, m_vl: int, n_vl: int) -> Path:
+    return bundle_variant_dir(pack_a, pack_b, m_vl, n_vl) / "bundle_version.txt"
+
+
 def ensure_bundle(pack_a: bool, pack_b: bool, m_vl: int, n_vl: int) -> None:
     sbgemm_binary = benchmark_binary_for_variant(pack_a, pack_b, m_vl, n_vl, "bf16")
     shgemm_binary = benchmark_binary_for_variant(pack_a, pack_b, m_vl, n_vl, "fp16")
-    if sbgemm_binary.exists() and shgemm_binary.exists():
+    version_file = bundle_version_file(pack_a, pack_b, m_vl, n_vl)
+    version_matches = version_file.exists() and version_file.read_text(encoding="utf-8").strip() == BUNDLE_LAYOUT_VERSION
+    if sbgemm_binary.exists() and shgemm_binary.exists() and version_matches:
         return
 
     build_cmd = [
