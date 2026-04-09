@@ -1,14 +1,25 @@
+"""Batch performance benchmark for SME half kernels.
+
+This harness benchmarks the 12 fixed ``pack x tile`` bundle variants and
+exports one aggregate CSV per precision.
+"""
+
+from __future__ import annotations
+
 import argparse
+import csv
 import os
-import subprocess
 import re
-import pandas as pd
+import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Mapping, Sequence
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
+
+
 BUNDLE_BUILDER = REPO_ROOT / "src" / "micro_kernel_SME" / "half" / "build_blas_bundle.py"
 BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v3"
 
@@ -18,24 +29,74 @@ CONFIG = {
     "env": {"OMP_NUM_THREADS": "1"},
     "inner_loops": 64,
     "bundle_output_root": REPO_ROOT / "build" / "perf_bundles",
-    "kernel_shapes": [
-        ("1VLx4VL", 1, 4),
-        ("2VLx2VL", 2, 2),
-        ("4VLx1VL", 4, 1),
-    ],
 }
 
+
+PACK_MODES: tuple[tuple[str, bool, bool], ...] = (
+    ("nopack", False, False),
+    ("packa", True, False),
+    ("packb", False, True),
+    ("packab", True, True),
+)
+KERNEL_SHAPES: tuple[tuple[str, int, int], ...] = (
+    ("1VLx4VL", 1, 4),
+    ("2VLx2VL", 2, 2),
+    ("4VLx1VL", 4, 1),
+)
+ALL_VARIANTS: tuple[dict[str, object], ...] = tuple(
+    {
+        "pack_name": pack_name,
+        "pack_a": pack_a,
+        "pack_b": pack_b,
+        "tile_name": tile_name,
+        "m_vl": m_vl,
+        "n_vl": n_vl,
+        "short_label": f"{pack_name}_{m_vl}x{n_vl}",
+    }
+    for pack_name, pack_a, pack_b in PACK_MODES
+    for tile_name, m_vl, n_vl in KERNEL_SHAPES
+)
+
+
+def _round_numeric_fields(rows: List[Dict[str, object]]) -> None:
+    """Round float values in-place for stable CSV output."""
+
+    for row in rows:
+        for key, value in list(row.items()):
+            if isinstance(value, float):
+                row[key] = round(value, 2)
+
+
+def _write_csv(rows: Sequence[Dict[str, object]], csv_file: str) -> None:
+    """Write CSV output without requiring pandas."""
+
+    if not rows:
+        return
+
+    fieldnames = list(rows[0].keys())
+    with open(csv_file, "w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def parse_blas_output(output: str) -> float:
+    """Extract MFlops from a benchmark binary stdout."""
+
     match = re.search(r"MFlops_Effi_Time_avg:\[\s*(\d+\.\d+)\s*MFlops", output)
     if match:
         return float(match.group(1))
-    raise ValueError("Failed to parse BLAS MFlops")
+    raise ValueError("Failed to parse benchmark MFlops output")
 
-def run_command(cmd: List[str], extra_env: Dict[str, str] = None) -> str:
+
+def run_command(cmd: List[str], extra_env: Dict[str, str] | None = None) -> str:
+    """Run a child process and surface stdout on failure."""
+
     env = os.environ.copy()
     env.update(CONFIG["env"])
     if extra_env is not None:
         env.update(extra_env)
+
     try:
         result = subprocess.run(
             cmd,
@@ -46,53 +107,53 @@ def run_command(cmd: List[str], extra_env: Dict[str, str] = None) -> str:
             env=env,
         )
         return result.stdout
-    except subprocess.CalledProcessError as e:
-        captured_output = e.stdout.strip() if e.stdout else ""
+    except subprocess.CalledProcessError as exc:
+        captured_output = exc.stdout.strip() if exc.stdout else ""
         if captured_output:
-            raise RuntimeError(f"Command execution failed: {e}\n{captured_output}") from e
-        raise RuntimeError(f"Command execution failed: {e}") from e
+            raise RuntimeError(f"Command execution failed: {exc}\n{captured_output}") from exc
+        raise RuntimeError(f"Command execution failed: {exc}") from exc
 
 
-def pack_label(pack_a: bool, pack_b: bool, func_name: str) -> str:
-    if pack_a and pack_b:
-        return f"{func_name}_packab"
-    if pack_a:
-        return f"{func_name}_packa"
-    if pack_b:
-        return f"{func_name}_packb"
-    return "autogemm_nopacking"
+def variant_metric_label(variant: Mapping[str, object], func_name: str) -> str:
+    """Return the CSV metric suffix for one fixed variant."""
+
+    pack_name = str(variant["pack_name"])
+    if pack_name == "nopack":
+        pack_part = "autogemm_nopacking"
+    else:
+        pack_part = f"{func_name}_{pack_name}"
+    return f"{pack_part}_{str(variant['tile_name'])}"
 
 
-def build_pack_name(pack_a: bool, pack_b: bool) -> str:
-    if pack_a and pack_b:
-        return "packab"
-    if pack_a:
-        return "packa"
-    if pack_b:
-        return "packb"
-    return "nopack"
+def bundle_variant_dir(variant: Mapping[str, object]) -> Path:
+    """Return the output directory for one fixed pack/tile bundle."""
+
+    return CONFIG["bundle_output_root"] / f"{variant['pack_name']}_{variant['m_vl']}x{variant['n_vl']}"
 
 
-def bundle_variant_dir(pack_a: bool, pack_b: bool, m_vl: int, n_vl: int) -> Path:
-    pack_name = build_pack_name(pack_a, pack_b)
-    return CONFIG["bundle_output_root"] / f"{pack_name}_{m_vl}x{n_vl}"
+def benchmark_binary_for_variant(variant: Mapping[str, object], data_type: str) -> Path:
+    """Return the benchmark executable path for one variant and precision."""
 
-
-def benchmark_binary_for_variant(pack_a: bool, pack_b: bool, m_vl: int, n_vl: int, data_type: str) -> Path:
-    bundle_dir = bundle_variant_dir(pack_a, pack_b, m_vl, n_vl)
     binary_name = "sbgemm.goto" if data_type == "bf16" else "shgemm.goto"
-    return bundle_dir / "bin" / binary_name
+    return bundle_variant_dir(variant) / "bin" / binary_name
 
 
-def bundle_version_file(pack_a: bool, pack_b: bool, m_vl: int, n_vl: int) -> Path:
-    return bundle_variant_dir(pack_a, pack_b, m_vl, n_vl) / "bundle_version.txt"
+def bundle_version_file(variant: Mapping[str, object]) -> Path:
+    """Return the bundle layout version file path."""
+
+    return bundle_variant_dir(variant) / "bundle_version.txt"
 
 
-def ensure_bundle(pack_a: bool, pack_b: bool, m_vl: int, n_vl: int) -> None:
-    sbgemm_binary = benchmark_binary_for_variant(pack_a, pack_b, m_vl, n_vl, "bf16")
-    shgemm_binary = benchmark_binary_for_variant(pack_a, pack_b, m_vl, n_vl, "fp16")
-    version_file = bundle_version_file(pack_a, pack_b, m_vl, n_vl)
-    version_matches = version_file.exists() and version_file.read_text(encoding="utf-8").strip() == BUNDLE_LAYOUT_VERSION
+def ensure_bundle(variant: Mapping[str, object]) -> None:
+    """Build a fixed variant bundle when it is missing or stale."""
+
+    sbgemm_binary = benchmark_binary_for_variant(variant, "bf16")
+    shgemm_binary = benchmark_binary_for_variant(variant, "fp16")
+    version_file = bundle_version_file(variant)
+    version_matches = (
+        version_file.exists()
+        and version_file.read_text(encoding="utf-8").strip() == BUNDLE_LAYOUT_VERSION
+    )
     if sbgemm_binary.exists() and shgemm_binary.exists() and version_matches:
         return
 
@@ -100,33 +161,38 @@ def ensure_bundle(pack_a: bool, pack_b: bool, m_vl: int, n_vl: int) -> None:
         sys.executable,
         str(BUNDLE_BUILDER),
         "--pack",
-        build_pack_name(pack_a, pack_b),
+        str(variant["pack_name"]),
         "--m-vl",
-        str(m_vl),
+        str(variant["m_vl"]),
         "--n-vl",
-        str(n_vl),
+        str(variant["n_vl"]),
         "--output-dir",
         str(CONFIG["bundle_output_root"]),
     ]
     print(
-        f"[INFO] Building fixed bundle for pack={build_pack_name(pack_a, pack_b)}, "
-        f"tile={m_vl}x{n_vl}"
+        f"[INFO] Building fixed bundle for pack={variant['pack_name']}, "
+        f"tile={variant['m_vl']}x{variant['n_vl']}"
     )
     run_command(build_cmd)
 
 
-def prepare_kernel_binaries(pack_a: bool, pack_b: bool) -> Dict[tuple, Path]:
-    binaries = {}
-    for tile_name, m_vl, n_vl in CONFIG["kernel_shapes"]:
-        ensure_bundle(pack_a, pack_b, m_vl, n_vl)
-        binaries[("bf16", tile_name)] = benchmark_binary_for_variant(pack_a, pack_b, m_vl, n_vl, "bf16")
-        binaries[("fp16", tile_name)] = benchmark_binary_for_variant(pack_a, pack_b, m_vl, n_vl, "fp16")
+def prepare_kernel_binaries(variants: Sequence[Mapping[str, object]]) -> Dict[tuple[str, str], Path]:
+    """Ensure required bundles exist and return benchmark binary paths."""
+
+    binaries: Dict[tuple[str, str], Path] = {}
+    for variant in variants:
+        ensure_bundle(variant)
+        binaries[("bf16", str(variant["short_label"]))] = benchmark_binary_for_variant(variant, "bf16")
+        binaries[("fp16", str(variant["short_label"]))] = benchmark_binary_for_variant(variant, "fp16")
     return binaries
 
-def generate_test_case_groups_by_trans() -> Dict[str, List[Dict]]:
+
+def generate_test_case_groups_by_trans() -> Dict[str, List[Dict[str, object]]]:
+    """Build the expanded perf suite grouped by transpose pair."""
+
     trans_pairs = [("N", "N"), ("N", "T"), ("T", "N"), ("T", "T")]
-    cases_by_trans = {f"{ta}{tb}": [] for ta, tb in trans_pairs}
-    SIZES_S = [16, 24, 32, 48]
+    cases_by_trans = {f"{transa}{transb}": [] for transa, transb in trans_pairs}
+    small_sizes = [16, 24, 32, 48]
     k_list = [16, 24, 32, 48, 64, 96]
     selected_sizes = [
         (16, 64), (24, 96), (32, 100), (48, 128), (64, 192),
@@ -144,68 +210,85 @@ def generate_test_case_groups_by_trans() -> Dict[str, List[Dict]]:
     verybig_k_n_list = [64, 128, 256]
     verybig_k_k_list = [256, 300, 512]
 
-    def label(x: int) -> str:
-        return "S" if x in SIZES_S else "L"
+    def label(size: int) -> str:
+        return "S" if size in small_sizes else "L"
 
     for k in k_list:
         for m, n in selected_sizes:
             shape_type = f"{label(m)}{label(n)}S"
-            for ta, tb in trans_pairs:
-                cases_by_trans[f"{ta}{tb}"].append(
-                    {"m": m, "n": n, "k": k, "transa": ta, "transb": tb, "type": shape_type}
+            for transa, transb in trans_pairs:
+                cases_by_trans[f"{transa}{transb}"].append(
+                    {"m": m, "n": n, "k": k, "transa": transa, "transb": transb, "type": shape_type}
                 )
 
-    # verybigN
     for m in verybig_n_m_list:
         for n in verybig_n_n_list:
             for k in verybig_n_k_list:
-                for ta, tb in trans_pairs:
-                    cases_by_trans[f"{ta}{tb}"].append(
-                        {"m": m, "n": n, "k": k, "transa": ta, "transb": tb, "type": "verybigN"}
+                for transa, transb in trans_pairs:
+                    cases_by_trans[f"{transa}{transb}"].append(
+                        {"m": m, "n": n, "k": k, "transa": transa, "transb": transb, "type": "verybigN"}
                     )
 
-    # verybigM
     for m in verybig_m_m_list:
         for n in verybig_m_n_list:
             for k in verybig_m_k_list:
-                for ta, tb in trans_pairs:
-                    cases_by_trans[f"{ta}{tb}"].append(
-                        {"m": m, "n": n, "k": k, "transa": ta, "transb": tb, "type": "verybigM"}
+                for transa, transb in trans_pairs:
+                    cases_by_trans[f"{transa}{transb}"].append(
+                        {"m": m, "n": n, "k": k, "transa": transa, "transb": transb, "type": "verybigM"}
                     )
 
-    # verybigK
     for m in verybig_k_m_list:
         for n in verybig_k_n_list:
             for k in verybig_k_k_list:
-                for ta, tb in trans_pairs:
-                    cases_by_trans[f"{ta}{tb}"].append(
-                        {"m": m, "n": n, "k": k, "transa": ta, "transb": tb, "type": "verybigK"}
+                for transa, transb in trans_pairs:
+                    cases_by_trans[f"{transa}{transb}"].append(
+                        {"m": m, "n": n, "k": k, "transa": transa, "transb": transb, "type": "verybigK"}
                     )
 
-    grouped_cases = {}
+    grouped_cases: Dict[str, List[Dict[str, object]]] = {}
     for trans_key, cases in cases_by_trans.items():
         unique_dict = {}
-        for c in cases:
-            key = (c["m"], c["n"], c["k"], c["transa"], c["transb"])
-            unique_dict[key] = c
+        for case in cases:
+            key = (case["m"], case["n"], case["k"], case["transa"], case["transb"])
+            unique_dict[key] = case
         grouped_cases[trans_key] = list(unique_dict.values())
 
     return grouped_cases
 
 
-def generate_test_cases() -> List[Dict]:
+def generate_test_cases() -> List[Dict[str, object]]:
+    """Flatten grouped transpose cases into one ordered perf suite."""
+
     cases_by_trans = generate_test_case_groups_by_trans()
-    ordered_cases = []
+    ordered_cases: List[Dict[str, object]] = []
     for trans_key in ("NN", "NT", "TN", "TT"):
         ordered_cases.extend(cases_by_trans[trans_key])
     return ordered_cases
 
-def run_test_case(case: Dict, kernel_binary: Path) -> float:
-    m, n, k = case["m"], case["n"], case["k"]
-    ta, tb = case["transa"], case["transb"]
-    lda = k if ta == "T" else m
-    ldb = n if tb == "T" else k
+
+def default_leading_dimensions(case: Mapping[str, object]) -> tuple[int, int, int]:
+    """Return BLAS-style lda/ldb/ldc defaults for one case."""
+
+    m = int(case["m"])
+    n = int(case["n"])
+    k = int(case["k"])
+    transa = str(case["transa"])
+    transb = str(case["transb"])
+    lda = k if transa == "T" else m
+    ldb = n if transb == "T" else k
     ldc = m
+    return lda, ldb, ldc
+
+
+def run_test_case(case: Mapping[str, object], kernel_binary: Path) -> float:
+    """Benchmark one case against one fixed kernel bundle."""
+
+    m = int(case["m"])
+    n = int(case["n"])
+    k = int(case["k"])
+    transa = str(case["transa"])
+    transb = str(case["transb"])
+    lda, ldb, ldc = default_leading_dimensions(case)
 
     kernel_cmd_parts = [
         *CONFIG["numactl"],
@@ -217,8 +300,8 @@ def run_test_case(case: Dict, kernel_binary: Path) -> float:
         "-lda", str(lda),
         "-ldb", str(ldb),
         "-ldc", str(ldc),
-        "-transa", ta,
-        "-transb", tb,
+        "-transa", transa,
+        "-transb", transb,
         "-api", "F",
         "-order", "C",
         "-alphaR", "1.0",
@@ -232,9 +315,15 @@ def run_test_case(case: Dict, kernel_binary: Path) -> float:
     except Exception:
         return 0.0
 
-def run_blas_case(case: Dict, blas_binary: str) -> float:
-    m, n, k = case["m"], case["n"], case["k"]
-    ta, tb = case["transa"], case["transb"]
+
+def run_blas_case(case: Mapping[str, object], blas_binary: str) -> float:
+    """Benchmark one case against the reference BLAS executable."""
+
+    m = int(case["m"])
+    n = int(case["n"])
+    k = int(case["k"])
+    transa = str(case["transa"])
+    transb = str(case["transb"])
 
     blas_cmd = [
         *CONFIG["numactl"],
@@ -243,8 +332,8 @@ def run_blas_case(case: Dict, blas_binary: str) -> float:
         "-m", str(m),
         "-n", str(n),
         "-k", str(k),
-        "-transa", ta,
-        "-transb", tb,
+        "-transa", transa,
+        "-transb", transb,
         "-innerLoops", str(CONFIG["inner_loops"]),
     ]
 
@@ -254,141 +343,195 @@ def run_blas_case(case: Dict, blas_binary: str) -> float:
     except Exception:
         return 0.0
 
-def run_evaluation(
+
+def _benchmark_binary_lookup(
+    binaries: Mapping[tuple[str, str], Path],
+    data_type: str,
+    variant: Mapping[str, object],
+) -> Path:
+    return binaries[(data_type, str(variant["short_label"]))]
+
+
+def run_exhaustive_evaluation(
     data_type: str,
     blas_binary: str,
     func_name: str,
-    all_cases: List[Dict],
-    pack_a: bool,
-    pack_b: bool,
-):
-    """
-    Core evaluation loop. Runs all test cases for a specific data type (e.g., bf16, fp16).
-    """
+    all_cases: Sequence[Mapping[str, object]],
+) -> None:
+    """Benchmark all 12 fixed bundle variants and export one aggregate CSV."""
+
+    kernel_binaries = prepare_kernel_binaries(ALL_VARIANTS)
     total_cases = len(all_cases)
-    current_pack_label = pack_label(pack_a, pack_b, func_name)
-    kernel_binaries = prepare_kernel_binaries(pack_a, pack_b)
+
     print("\n" + "=" * 100)
-    print(f" >>> Starting Evaluation for {data_type.upper()} {current_pack_label} ({blas_binary}) <<<")
+    print(f" >>> Starting Exhaustive Evaluation for {data_type.upper()} ({blas_binary}) <<<")
     print("=" * 100)
 
-    results = []
-
-    # Initialize result rows
+    results: List[Dict[str, object]] = []
     for case in all_cases:
-        m, n, k = case["m"], case["n"], case["k"]
-        ta, tb = case["transa"], case["transb"]
-        cmd_str = f"{blas_binary} -transa {ta} -transb {tb} -m {m} -n {n} -k {k}"
-        row = {
-            "Command": cmd_str,
-            "Thread": 1,
-            "Function": func_name,
-            "type": case["type"],
-            "Mflops_KPL_BLAS": 0.0,
+        m = int(case["m"])
+        n = int(case["n"])
+        k = int(case["k"])
+        transa = str(case["transa"])
+        transb = str(case["transb"])
+        row: Dict[str, object] = {
+            "M": m,
+            "N": n,
+            "K": k,
+            "transA": transa,
+            "transB": transb,
+            "type": str(case["type"]),
         }
-        for tile_name, _, _ in CONFIG["kernel_shapes"]:
-            row[f"Mflops_{current_pack_label}_{tile_name}"] = 0.0
+        for variant in ALL_VARIANTS:
+            row[f"Mflops_{variant_metric_label(variant, func_name)}"] = 0.0
         results.append(row)
 
-    # 1. Run BLAS once as baseline
     print(f"\n>>> Starting KPL_BLAS baseline test for {data_type.upper()} <<<")
-    for i, case in enumerate(all_cases):
-        print(f"[{i+1}/{total_cases}] BLAS: {results[i]['Command']:60} ... ", end="", flush=True)
+    for index, case in enumerate(all_cases):
+        print(
+            f"[{index + 1}/{total_cases}] BLAS: "
+            f"M={int(case['m'])} N={int(case['n'])} K={int(case['k'])} "
+            f"ta={str(case['transa'])} tb={str(case['transb'])} ... ",
+            end="",
+            flush=True,
+        )
         score = run_blas_case(case, blas_binary)
-        results[i]["Mflops_KPL_BLAS"] = score
+        results[index]["Mflops_KPL_BLAS"] = score
         print(f"{score:,.2f}")
 
-    print("\n" + "=" * 100)
-    print(f">>> Starting kernel mode: {current_pack_label} <<<")
-    for tile_name, m_vl, n_vl in CONFIG["kernel_shapes"]:
+    for variant in ALL_VARIANTS:
+        variant_label = variant_metric_label(variant, func_name)
         print("\n" + "=" * 100)
         print(
-            f">>> Starting tile test: {tile_name} (m_vl={m_vl}, n_vl={n_vl}, "
-            f"pack_a={pack_a}, pack_b={pack_b}) <<<"
+            f">>> Starting variant test: {variant['short_label']} "
+            f"(pack_a={variant['pack_a']}, pack_b={variant['pack_b']}) <<<"
         )
-        kernel_binary = kernel_binaries[(data_type, tile_name)]
+        kernel_binary = _benchmark_binary_lookup(kernel_binaries, data_type, variant)
         print(f"[INFO] Using kernel benchmark binary: {kernel_binary}")
 
-        for i, case in enumerate(all_cases):
-            print(f"[{i+1}/{total_cases}] {tile_name:8}/{current_pack_label:18}: {results[i]['Command']:60} ... ", end="", flush=True)
+        for index, case in enumerate(all_cases):
+            print(
+                f"[{index + 1}/{total_cases}] {str(variant['short_label']):12}: "
+                f"M={int(case['m'])} N={int(case['n'])} K={int(case['k'])} "
+                f"ta={str(case['transa'])} tb={str(case['transb'])} ... ",
+                end="",
+                flush=True,
+            )
             score = run_test_case(case, kernel_binary)
-            results[i][f"Mflops_{current_pack_label}_{tile_name}"] = score
+            results[index][f"Mflops_{variant_label}"] = score
             print(f"{score:,.2f}")
 
-    # Data processing and export
-    if results:
-        df = pd.DataFrame(results)
+    for variant in ALL_VARIANTS:
+        metric_key = f"Mflops_{variant_metric_label(variant, func_name)}"
+        improve_key = f"Improve_blas/{variant_metric_label(variant, func_name)}"
+        for row in results:
+            baseline = float(row["Mflops_KPL_BLAS"])
+            score = float(row[metric_key])
+            if baseline > 0.0:
+                improve_value = ((score / baseline) - 1.0) * 100.0
+                row[improve_key] = f"{improve_value:+.2f}%"
+            else:
+                row[improve_key] = "N/A"
 
-        ordered_cols = ["Command", "Thread", "Function", "type"]
+    _round_numeric_fields(results)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_file = f"sme_kernel_{data_type}_12variants_{timestamp}.csv"
+    _write_csv(results, csv_file)
+    print(f"[File] CSV saved to: {csv_file}")
 
-        for tile_name, _, _ in CONFIG["kernel_shapes"]:
-            metric_col = f"Mflops_{current_pack_label}_{tile_name}"
-            improve_col = f"Improve_blas/{current_pack_label}_{tile_name}"
-            mask = df["Mflops_KPL_BLAS"] > 0
-            df.loc[mask, improve_col] = (
-                (df.loc[mask, metric_col] / df.loc[mask, "Mflops_KPL_BLAS"]) - 1.0
-            ) * 100.0
-            df.loc[~mask, improve_col] = 0.0
-            df[improve_col] = df[improve_col].map(lambda x: f"{x:+.2f}%" if x != 0.0 else "N/A")
-            ordered_cols.append(metric_col)
 
-        ordered_cols.append("Mflops_KPL_BLAS")
+def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments."""
 
-        for tile_name, _, _ in CONFIG["kernel_shapes"]:
-            ordered_cols.append(f"Improve_blas/{current_pack_label}_{tile_name}")
-
-        export_df = df[ordered_cols].copy()
-        timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-
-        csv_file = f"sme_kernel_{data_type}_{current_pack_label}_{timestamp}.csv"
-        export_df.to_csv(csv_file, index=False)
-        print(f"[File] CSV saved to: {csv_file}")
-
-def main():
     parser = argparse.ArgumentParser()
-    parser.parse_args()
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Limit the number of cases per precision for smoke runs.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the selected evaluation plan without building bundles or running benchmarks.",
+    )
+    return parser.parse_args()
 
+
+def _truncate_cases(
+    all_cases: Sequence[Mapping[str, object]],
+    cases_by_trans: Mapping[str, Sequence[Mapping[str, object]]],
+    limit: int,
+) -> tuple[List[Mapping[str, object]], Dict[str, List[Mapping[str, object]]]]:
+    if limit <= 0:
+        return list(all_cases), {key: list(value) for key, value in cases_by_trans.items()}
+
+    truncated_cases = list(all_cases[:limit])
+    allowed = {
+        (case["m"], case["n"], case["k"], case["transa"], case["transb"])
+        for case in truncated_cases
+    }
+    truncated_groups = {
+        trans_key: [
+            case for case in trans_cases
+            if (case["m"], case["n"], case["k"], case["transa"], case["transb"]) in allowed
+        ]
+        for trans_key, trans_cases in cases_by_trans.items()
+    }
+    return truncated_cases, truncated_groups
+
+
+def _print_header(
+    cases_by_trans: Mapping[str, Sequence[Mapping[str, object]]],
+    total_cases: int,
+) -> None:
     print("=" * 100)
     print("  SME Kernel vs BLAS (Automated BF16 & FP16 Testing)")
     print("=" * 100)
     print("[INFO] test_perf runs perf-only kernels; correctness is skipped via --perf_only")
-
-    cases_by_trans = generate_test_case_groups_by_trans()
-    all_cases = generate_test_cases()
-    total_cases = len(all_cases)
     print("Perf suite: expanded")
     print(f"Total test cases per precision type: {total_cases}")
     for trans_key, trans_cases in cases_by_trans.items():
         print(f"  - {trans_key}: {len(trans_cases)} cases")
-    print("[INFO] test_perf runs all four pack modes: nopack, packa, packb, packab")
+    print("[INFO] test_perf runs all 12 fixed pack/tile variants into one aggregate table")
 
-    # Define the testing configurations: precision, executable path, and output function name
+
+def _print_dry_run_plan() -> None:
+    print("[DRY RUN] No bundles will be built and no benchmark binaries will run.")
+    print("[DRY RUN] Bundles that would be prepared:")
+    for variant in ALL_VARIANTS:
+        print(f"  - {variant['short_label']}")
+
+
+def main() -> None:
+    """Program entrypoint."""
+
+    args = parse_args()
+    cases_by_trans = generate_test_case_groups_by_trans()
+    all_cases = generate_test_cases()
+    all_cases, cases_by_trans = _truncate_cases(all_cases, cases_by_trans, args.limit)
+    _print_header(cases_by_trans, len(all_cases))
+
+    if args.dry_run:
+        _print_dry_run_plan()
+        return
+
     test_configs = [
         {"data_type": "bf16", "blas_binary": str(SCRIPT_DIR / "sbgemm.goto"), "func_name": "sbgemm"},
         {"data_type": "fp16", "blas_binary": str(SCRIPT_DIR / "shgemm.goto"), "func_name": "shgemm"},
     ]
-    pack_modes = [
-        (False, False),
-        (True, False),
-        (False, True),
-        (True, True),
-    ]
 
     try:
-        # Loop over configurations to automatically test bf16 and then fp16
         for config in test_configs:
-            for pack_a, pack_b in pack_modes:
-                run_evaluation(
-                    data_type=config["data_type"],
-                    blas_binary=config["blas_binary"],
-                    func_name=config["func_name"],
-                    all_cases=all_cases,
-                    pack_a=pack_a,
-                    pack_b=pack_b,
-                )
-
+            run_exhaustive_evaluation(
+                data_type=config["data_type"],
+                blas_binary=config["blas_binary"],
+                func_name=config["func_name"],
+                all_cases=all_cases,
+            )
     except KeyboardInterrupt:
-        print("\n[Interrupted by user] Halting execution and keeping collected data from earlier evaluations...")
+        print("\n[Interrupted by user] Halting execution and preserving earlier results.")
+
 
 if __name__ == "__main__":
     main()
