@@ -24,10 +24,12 @@ BUNDLE_BUILDER = REPO_ROOT / "src" / "micro_kernel_SME" / "half" / "build_blas_b
 BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v3"
 
 CONFIG = {
-    "numactl": ["numactl", "-m", "15"],
-    "taskset": ["taskset", "-c", "575"],
+    "numactl": ["numactl", "-m", "7"],
+    "taskset": ["taskset", "-c", "266"],
     "env": {"OMP_NUM_THREADS": "1"},
     "inner_loops": 64,
+    "alpha": 2.0,
+    "beta": 3.0,
     "bundle_output_root": REPO_ROOT / "build" / "perf_bundles",
 }
 
@@ -188,72 +190,25 @@ def prepare_kernel_binaries(variants: Sequence[Mapping[str, object]]) -> Dict[tu
 
 
 def generate_test_case_groups_by_trans() -> Dict[str, List[Dict[str, object]]]:
-    """Build the expanded perf suite grouped by transpose pair."""
+    """Build the fixed perf suite grouped by transpose pair."""
 
     trans_pairs = [("N", "N"), ("N", "T"), ("T", "N"), ("T", "T")]
     cases_by_trans = {f"{transa}{transb}": [] for transa, transb in trans_pairs}
-    small_sizes = [16, 24, 32, 48]
-    k_list = [16, 24, 32, 48, 64, 96]
-    selected_sizes = [
-        (16, 64), (24, 96), (32, 100), (48, 128), (64, 192),
-        (96, 256), (128, 300), (192, 384), (256, 512), (512, 768),
-        (64, 16), (96, 24), (100, 32), (128, 48), (192, 64),
-        (256, 96), (300, 128), (384, 192), (512, 256), (768, 512),
-    ]
-    verybig_n_m_list = [28, 64, 128]
-    verybig_n_n_list = [500, 1000, 1536]
-    verybig_n_k_list = [16, 32]
-    verybig_m_m_list = [500, 1000, 1536]
-    verybig_m_n_list = [28, 64, 128]
-    verybig_m_k_list = [16, 32]
-    verybig_k_m_list = [64, 128, 256]
-    verybig_k_n_list = [64, 128, 256]
-    verybig_k_k_list = [256, 300, 512]
+    shape_ranges = (
+        (range(16, 129, 16), range(16, 129, 16), range(16, 129, 16)),
+        (range(256, 1025, 128), range(256, 1025, 128), range(256, 1025, 128)),
+    )
 
-    def label(size: int) -> str:
-        return "S" if size in small_sizes else "L"
+    for m_values, n_values, k_values in shape_ranges:
+        for m in m_values:
+            for n in n_values:
+                for k in k_values:
+                    for transa, transb in trans_pairs:
+                        cases_by_trans[f"{transa}{transb}"].append(
+                            {"m": m, "n": n, "k": k, "transa": transa, "transb": transb}
+                        )
 
-    for k in k_list:
-        for m, n in selected_sizes:
-            shape_type = f"{label(m)}{label(n)}S"
-            for transa, transb in trans_pairs:
-                cases_by_trans[f"{transa}{transb}"].append(
-                    {"m": m, "n": n, "k": k, "transa": transa, "transb": transb, "type": shape_type}
-                )
-
-    for m in verybig_n_m_list:
-        for n in verybig_n_n_list:
-            for k in verybig_n_k_list:
-                for transa, transb in trans_pairs:
-                    cases_by_trans[f"{transa}{transb}"].append(
-                        {"m": m, "n": n, "k": k, "transa": transa, "transb": transb, "type": "verybigN"}
-                    )
-
-    for m in verybig_m_m_list:
-        for n in verybig_m_n_list:
-            for k in verybig_m_k_list:
-                for transa, transb in trans_pairs:
-                    cases_by_trans[f"{transa}{transb}"].append(
-                        {"m": m, "n": n, "k": k, "transa": transa, "transb": transb, "type": "verybigM"}
-                    )
-
-    for m in verybig_k_m_list:
-        for n in verybig_k_n_list:
-            for k in verybig_k_k_list:
-                for transa, transb in trans_pairs:
-                    cases_by_trans[f"{transa}{transb}"].append(
-                        {"m": m, "n": n, "k": k, "transa": transa, "transb": transb, "type": "verybigK"}
-                    )
-
-    grouped_cases: Dict[str, List[Dict[str, object]]] = {}
-    for trans_key, cases in cases_by_trans.items():
-        unique_dict = {}
-        for case in cases:
-            key = (case["m"], case["n"], case["k"], case["transa"], case["transb"])
-            unique_dict[key] = case
-        grouped_cases[trans_key] = list(unique_dict.values())
-
-    return grouped_cases
+    return cases_by_trans
 
 
 def generate_test_cases() -> List[Dict[str, object]]:
@@ -304,8 +259,8 @@ def run_test_case(case: Mapping[str, object], kernel_binary: Path) -> float:
         "-transb", transb,
         "-api", "F",
         "-order", "C",
-        "-alphaR", "1.0",
-        "-betaR", "1.0",
+        "-alphaR", str(CONFIG["alpha"]),
+        "-betaR", str(CONFIG["beta"]),
         "-innerLoops", str(CONFIG["inner_loops"]),
     ]
 
@@ -324,6 +279,7 @@ def run_blas_case(case: Mapping[str, object], blas_binary: str) -> float:
     k = int(case["k"])
     transa = str(case["transa"])
     transb = str(case["transb"])
+    lda, ldb, ldc = default_leading_dimensions(case)
 
     blas_cmd = [
         *CONFIG["numactl"],
@@ -332,8 +288,15 @@ def run_blas_case(case: Mapping[str, object], blas_binary: str) -> float:
         "-m", str(m),
         "-n", str(n),
         "-k", str(k),
+        "-lda", str(lda),
+        "-ldb", str(ldb),
+        "-ldc", str(ldc),
         "-transa", transa,
         "-transb", transb,
+        "-api", "F",
+        "-order", "C",
+        "-alphaR", str(CONFIG["alpha"]),
+        "-betaR", str(CONFIG["beta"]),
         "-innerLoops", str(CONFIG["inner_loops"]),
     ]
 
@@ -380,7 +343,6 @@ def run_exhaustive_evaluation(
             "K": k,
             "transA": transa,
             "transB": transb,
-            "type": str(case["type"]),
         }
         for variant in ALL_VARIANTS:
             row[f"Mflops_{variant_metric_label(variant, func_name)}"] = 0.0
@@ -432,6 +394,19 @@ def run_exhaustive_evaluation(
                 row[improve_key] = f"{improve_value:+.2f}%"
             else:
                 row[improve_key] = "N/A"
+
+    for row in results:
+        best_label = "BLAS"
+        best_value = float(row["Mflops_KPL_BLAS"])
+        for variant in ALL_VARIANTS:
+            variant_label = str(variant["short_label"])
+            metric_key = f"Mflops_{variant_metric_label(variant, func_name)}"
+            metric_value = float(row[metric_key])
+            if metric_value > best_value:
+                best_label = variant_label
+                best_value = metric_value
+        row["BestImplementation"] = best_label
+        row["BestMflops"] = best_value
 
     _round_numeric_fields(results)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -489,11 +464,14 @@ def _print_header(
     print("  SME Kernel vs BLAS (Automated BF16 & FP16 Testing)")
     print("=" * 100)
     print("[INFO] test_perf runs perf-only kernels; correctness is skipped via --perf_only")
-    print("Perf suite: expanded")
+    print("Perf suite: fixed")
     print(f"Total test cases per precision type: {total_cases}")
     for trans_key, trans_cases in cases_by_trans.items():
         print(f"  - {trans_key}: {len(trans_cases)} cases")
-    print("[INFO] test_perf runs all 12 fixed pack/tile variants into one aggregate table")
+    print(
+        f"[INFO] fixed alpha={CONFIG['alpha']}, beta={CONFIG['beta']}; "
+        "all 12 fixed pack/tile variants are exported into one aggregate table"
+    )
 
 
 def _print_dry_run_plan() -> None:
