@@ -267,7 +267,9 @@ def run_test_case(case: Mapping[str, object], kernel_binary: Path) -> float:
     try:
         kernel_output = run_command(kernel_cmd_parts)
         return parse_blas_output(kernel_output)
-    except Exception:
+    except Exception as exc:
+        print(f"\n[ERROR] kernel benchmark failed: {' '.join(kernel_cmd_parts)}")
+        print(f"[ERROR DETAIL] {exc}")
         return 0.0
 
 
@@ -293,8 +295,6 @@ def run_blas_case(case: Mapping[str, object], blas_binary: str) -> float:
         "-ldc", str(ldc),
         "-transa", transa,
         "-transb", transb,
-        "-api", "F",
-        "-order", "C",
         "-alphaR", str(CONFIG["alpha"]),
         "-betaR", str(CONFIG["beta"]),
         "-innerLoops", str(CONFIG["inner_loops"]),
@@ -303,7 +303,9 @@ def run_blas_case(case: Mapping[str, object], blas_binary: str) -> float:
     try:
         blas_output = run_command(blas_cmd)
         return parse_blas_output(blas_output)
-    except Exception:
+    except Exception as exc:
+        print(f"\n[ERROR] BLAS benchmark failed: {' '.join(blas_cmd)}")
+        print(f"[ERROR DETAIL] {exc}")
         return 0.0
 
 
