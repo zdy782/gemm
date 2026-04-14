@@ -1,3 +1,7 @@
+from .generate_gemm_ncopy import generate_gemm_ncopy
+from .generate_gemm_tcopy import generate_gemm_tcopy
+
+
 GEMM_P = 256
 GEMM_Q = 512
 GEMM_R = 1024
@@ -15,13 +19,6 @@ def gen_driver_kernel_call(kernel_func_name, alpha_name, a_ptr, b_ptr, beta_name
     return (
         f"{kernel_func_name}(minI, minJ, minL, {alpha_name}, {a_ptr}, {b_ptr}, {beta_name}, {c_ptr}, "
         f"{lda_name}, {ldb_name}, {ldc_name});"
-    )
-
-
-def gen_pack_decl(cname: str, input_type: str) -> str:
-    return (
-        f'extern "C" void {cname}(int k, int n, const {input_type} *src, '
-        f"int ldsrc, {input_type} *dst);\n"
     )
 
 
@@ -234,9 +231,15 @@ static constexpr int AUTOGEMM_COPY_UNROLL_M = {spec.tile.m_vl};
 static constexpr int AUTOGEMM_COPY_UNROLL_N = {spec.tile.n_vl};
 """
     if a_needs_pack:
-        code += gen_pack_decl(itcopy_name if spec.transA == "N" else incopy_name, input_type)
+        if spec.transA == "N":
+            code += generate_gemm_tcopy(itcopy_name, input_type, "IT")
+        else:
+            code += generate_gemm_ncopy(incopy_name, input_type, "IN")
     if b_needs_pack:
-        code += gen_pack_decl(oncopy_name if spec.transB == "N" else otcopy_name, input_type)
+        if spec.transB == "N":
+            code += generate_gemm_ncopy(oncopy_name, input_type, "ON")
+        else:
+            code += generate_gemm_tcopy(otcopy_name, input_type, "OT")
 
     code += f"""
 extern "C" int {driver_func_name}(const long M, const long N, const long K, const float alpha, const {input_type} *A, const {input_type} *B, const float beta, {output_type} *C, const long lda, const long ldb, const long ldc)

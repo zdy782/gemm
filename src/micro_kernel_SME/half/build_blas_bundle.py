@@ -30,12 +30,11 @@ from micro_kernel_SME.half.global_config import assert_valid_tile_combo
 from micro_kernel_SME.half.model_spec import KernelSpec
 
 
-SRC_DIR = Path(__file__).resolve().parent
 TRANSPOSE_PAIRS: Tuple[Tuple[str, str], ...] = (("N", "N"), ("N", "T"), ("T", "N"), ("T", "T"))
 PRECISIONS: Tuple[str, ...] = ("bf16", "fp16")
 PLACEHOLDER_DIM = 256
 SHARED_LIB_NAME = "libautogemm_half.so"
-BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v3"
+BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v4"
 CC = os.environ.get("CC", "clang")
 CXX = os.environ.get("CXX", "clang++")
 AUTOGEMM_TARGET_TRIPLE = os.environ.get("AUTOGEMM_TARGET_TRIPLE", "")
@@ -52,10 +51,6 @@ COMMON_ASM_FLAGS = ["-O3", "-fPIC"]
 MARCH_FLAGS = {
     "bf16": "-march=armv9-a+sme+bf16",
     "fp16": "-march=armv9-a+sme",
-}
-PACK_ASM_SOURCES = {
-    "bf16": SRC_DIR / "sbgemm_half_pack.S",
-    "fp16": SRC_DIR / "shgemm_half_pack.S",
 }
 
 
@@ -1000,17 +995,6 @@ def _compile_backend_objects(
     return [asm_obj, driver_obj]
 
 
-def _compile_pack_object(variant_dir: Path, data_type: str) -> Path:
-    obj_dir = variant_dir / "obj"
-    pack_src = PACK_ASM_SOURCES[data_type]
-    pack_obj = obj_dir / f"{data_type}_half_pack.o"
-    _run_command(
-        [CC, *_common_target_flags(), MARCH_FLAGS[data_type], *COMMON_ASM_FLAGS, "-c", str(pack_src), "-o", str(pack_obj)],
-        variant_dir,
-    )
-    return pack_obj
-
-
 def _compile_wrapper_and_library(variant_dir: Path, backends: Sequence[BackendSpec], objects: Sequence[Path]) -> Path:
     gen_dir = variant_dir / "gen"
     obj_dir = variant_dir / "obj"
@@ -1092,7 +1076,6 @@ def build_bundle(pack: str, m_vl: int, n_vl: int, output_dir: Path) -> Path:
             backend = _backend_spec(data_type, trans_a, trans_b, pack_a, pack_b, m_vl, n_vl)
             backends.append(backend)
             objects.extend(_compile_backend_objects(variant_dir, backend, pack_a, pack_b, m_vl, n_vl))
-        objects.append(_compile_pack_object(variant_dir, data_type))
 
     _compile_wrapper_and_library(variant_dir, backends, objects)
     _compile_benchmark_executable(variant_dir, "bf16", backends)
