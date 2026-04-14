@@ -29,12 +29,13 @@ static void {cname}(int k, int n, const {input_type} *src, int ldsrc, {input_typ
         for (int i = 0; i < k; ++i) {{
             int js = 0;
             const uint16_t *tmpa = tmpa0;
+            uint16_t *tmpb = b + i * n + j;
             svbool_t pg = svwhilelt_b32_s32(js, min_j);
             do {{
                 const uint64_t cnt = svcntp_b32(svptrue_b32(), pg);
                 const svuint32_t packed = svld1uh_gather_u32offset_u32(pg, tmpa, off);
-                svst1h_u32(pg, b, packed);
-                b += cnt;
+                svst1h_u32(pg, tmpb, packed);
+                tmpb += cnt;
                 tmpa += cnt * ldsrc;
                 js += cnt;
                 pg = svwhilelt_b32_s32(js, min_j);
