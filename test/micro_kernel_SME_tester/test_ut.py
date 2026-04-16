@@ -58,7 +58,7 @@ def _expanded_points(tc):
     return _range_count(m_spec) * _range_count(n_spec) * _range_count(k_spec)
 
 
-def _run_mode(testcases, pack_a: bool, pack_b: bool):
+def _run_mode(testcases, pack_a: bool, pack_b: bool, predict_combo: bool):
     total = len(testcases)
     passed = 0
     failed = 0
@@ -83,6 +83,7 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
             data_type = tc["data_type"]
             m_vl = int(tc["m_vl"])
             n_vl = int(tc["n_vl"])
+            case_predict_combo = predict_combo and data_type == "bf16"
 
             _log(f"\n[{idx}/{total}] Running test case:")
             _log(f"  pack={current_pack}, pack_a={pack_a}, pack_b={pack_b}")
@@ -94,6 +95,8 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
                 f"  gemm_type={gemm_type}, transA={transA}, transB={transB}, "
                 f"data_type={data_type}, m_vl={m_vl}, n_vl={n_vl}"
             )
+            if case_predict_combo:
+                _log("  selector=enabled (BF16 pack/m_vl/n_vl come from the trained decision tree)")
             if is_range_case:
                 _log(f"  expanded_inner_tests={_expanded_points(tc)}")
 
@@ -116,6 +119,7 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
                     pack_b=pack_b,
                     verbose=True,
                     show_inner_progress=_tqdm_enabled(),
+                    predict_combo=case_predict_combo,
                 )
             else:
                 M = int(M_spec)
@@ -133,6 +137,7 @@ def _run_mode(testcases, pack_a: bool, pack_b: bool):
                     pack_a=pack_a,
                     pack_b=pack_b,
                     verbose=True,
+                    predict_combo=case_predict_combo,
                 )
 
             if ok:
@@ -227,6 +232,11 @@ def main():
     parser.add_argument("--pack_a", action="store_true")
     parser.add_argument("--pack_b", action="store_true")
     parser.add_argument("--all_packs", action="store_true")
+    parser.add_argument(
+        "--predict_combo",
+        action="store_true",
+        help="For BF16 cases, ignore the CSV pack/tile combination and use the trained selector.",
+    )
     parser.add_argument("--testcases", type=str, default=None)
     args = parser.parse_args()
 
@@ -245,6 +255,7 @@ def main():
         ok = run_single_test(
             16, 64, 16, 16, 64, 64, "small", "N", "N", 64,
             pack_a=args.pack_a, pack_b=args.pack_b,
+            predict_combo=args.predict_combo,
         )
         if ok:
             print("\n[PASS] Default test case passed")
@@ -264,7 +275,7 @@ def main():
     mode_results = []
     pack_modes = _pack_modes(args.all_packs, args.pack_a, args.pack_b)
     for pack_a, pack_b in pack_modes:
-        mode_results.append(_run_mode(testcases, pack_a, pack_b))
+        mode_results.append(_run_mode(testcases, pack_a, pack_b, args.predict_combo))
 
     total = sum(mode["total"] for mode in mode_results)
     passed = sum(mode["passed"] for mode in mode_results)

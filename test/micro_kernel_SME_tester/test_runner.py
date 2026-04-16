@@ -120,6 +120,49 @@ def setup_environment():
     return current_path
 
 
+def _resolve_selector_choice(
+    M,
+    N,
+    K,
+    transA,
+    transB,
+    data_type,
+    m_vl,
+    n_vl,
+    pack_a,
+    pack_b,
+    predict_combo,
+    verbose,
+):
+    from micro_kernel_SME.half.global_config import assert_valid_tile_combo
+
+    selected_m_vl = m_vl
+    selected_n_vl = n_vl
+    selected_pack_a = pack_a
+    selected_pack_b = pack_b
+    selector_result = None
+
+    if predict_combo and data_type == "bf16":
+        from micro_kernel_SME.bf16_selector import predict_bf16_combo
+
+        selector_result = predict_bf16_combo(M, N, K, transA, transB)
+        selected_pack_a = selector_result.pack_a
+        selected_pack_b = selector_result.pack_b
+        selected_m_vl = selector_result.m_vl
+        selected_n_vl = selector_result.n_vl
+        if verbose:
+            print(
+                "[INFO] BF16 selector chose "
+                f"combo={selector_result.combo} "
+                f"(pack_a={selector_result.pack_a}, pack_b={selector_result.pack_b}, "
+                f"m_vl={selector_result.m_vl}, n_vl={selector_result.n_vl}) "
+                f"for M={M}, N={N}, K={K}, transA={transA}, transB={transB}"
+            )
+
+    assert_valid_tile_combo(selected_m_vl, selected_n_vl)
+    return selected_m_vl, selected_n_vl, selected_pack_a, selected_pack_b, selector_result
+
+
 def run_single_test(
     M,
     N,
@@ -142,6 +185,7 @@ def run_single_test(
     beta: Optional[float] = None,
     verbose=True,
     keep_tmp=False,
+    predict_combo=False,
 ):
     """Run the full workflow for a single test case."""
     _set_last_failure_detail("init", "No failure detail recorded")
@@ -153,9 +197,21 @@ def run_single_test(
         generate_sme_test_cpp,
     )
     from micro_kernel_SME.half.generate_makefile import generate_makefile
-    from micro_kernel_SME.half.global_config import assert_valid_tile_combo
 
-    assert_valid_tile_combo(m_vl, n_vl)
+    m_vl, n_vl, pack_a, pack_b, _ = _resolve_selector_choice(
+        M,
+        N,
+        K,
+        transA,
+        transB,
+        data_type,
+        m_vl,
+        n_vl,
+        pack_a,
+        pack_b,
+        predict_combo,
+        verbose,
+    )
 
     uniq_id = "".join(random.choices(string.ascii_uppercase, k=8))
     test_path = os.path.join(current_path, "tmp", uniq_id)
@@ -356,6 +412,7 @@ def run_range_test(
     verbose=True,
     keep_tmp=False,
     show_inner_progress=False,
+    predict_combo=False,
 ):
     """Run one ref-style range UT row in a single generated tester."""
     _set_last_failure_detail("init", "No failure detail recorded")
@@ -367,9 +424,6 @@ def run_range_test(
         generate_sme_range_test_cpp,
     )
     from micro_kernel_SME.half.generate_makefile import generate_makefile
-    from micro_kernel_SME.half.global_config import assert_valid_tile_combo
-
-    assert_valid_tile_combo(m_vl, n_vl)
 
     m_start, m_end, m_step = _parse_range_spec(M_range)
     n_start, n_end, n_step = _parse_range_spec(N_range)
@@ -379,6 +433,20 @@ def run_range_test(
     lda_gen = _resolve_range_stride(lda, m_end if transA == "N" else k_end)
     ldb_gen = _resolve_range_stride(ldb, k_end if transB == "N" else n_end)
     ldc_gen = _resolve_range_stride(ldc, m_end)
+    m_vl, n_vl, pack_a, pack_b, _ = _resolve_selector_choice(
+        m_end,
+        n_end,
+        k_end,
+        transA,
+        transB,
+        data_type,
+        m_vl,
+        n_vl,
+        pack_a,
+        pack_b,
+        predict_combo,
+        verbose,
+    )
 
     uniq_id = "".join(random.choices(string.ascii_uppercase, k=8))
     test_path = os.path.join(current_path, "tmp", uniq_id)

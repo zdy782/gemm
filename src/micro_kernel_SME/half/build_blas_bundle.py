@@ -1,4 +1,4 @@
-"""Build a fixed pack or VL BLAS-style shared library bundle.
+"""Build BLAS-style shared library bundles for fixed or selector BF16 kernels.
 
 This entrypoint generates a variant-specific directory containing:
 
@@ -6,8 +6,9 @@ This entrypoint generates a variant-specific directory containing:
 - bin/sbgemm.goto
 - bin/shgemm.goto
 
-The runtime GEMM API stays BLAS-shaped, while pack and tile are fixed at build
-time via CLI arguments.
+Fixed bundles keep pack and tile frozen at build time. Selector bundles compile
+all 12 BF16 pack/tile combinations and dispatch at runtime with the generated
+decision tree, while FP16 stays on one fixed backend.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ from typing import Dict, List, Sequence, Tuple
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from micro_kernel_SME.bf16_selector.codegen import generate_cpp_selector
+from micro_kernel_SME.bf16_selector.predict import load_model
 from micro_kernel_SME.half.generate_sme_test import build_symbol_names, generate_sme_asm, generate_sme_driver_cpp
 from micro_kernel_SME.half.global_config import assert_valid_tile_combo
 from micro_kernel_SME.half.model_spec import KernelSpec
@@ -32,9 +35,11 @@ from micro_kernel_SME.half.model_spec import KernelSpec
 
 TRANSPOSE_PAIRS: Tuple[Tuple[str, str], ...] = (("N", "N"), ("N", "T"), ("T", "N"), ("T", "T"))
 PRECISIONS: Tuple[str, ...] = ("bf16", "fp16")
+PACK_CHOICES: Tuple[str, ...] = ("nopack", "packa", "packb", "packab")
+BF16_SELECTOR_TILES: Tuple[Tuple[str, int, int], ...] = (("1x4", 1, 4), ("2x2", 2, 2), ("4x1", 4, 1))
 PLACEHOLDER_DIM = 256
 SHARED_LIB_NAME = "libautogemm_half.so"
-BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v4"
+BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v5"
 CC = os.environ.get("CC", "clang")
 CXX = os.environ.get("CXX", "clang++")
 AUTOGEMM_TARGET_TRIPLE = os.environ.get("AUTOGEMM_TARGET_TRIPLE", "")
@@ -61,9 +66,22 @@ class BackendSpec:
     data_type: str
     trans_a: str
     trans_b: str
+    pack_name: str
+    pack_a: bool
+    pack_b: bool
+    m_vl: int
+    n_vl: int
     driver_name: str
     kernel_name: str
     uniq_id: str
+
+    @property
+    def tile_label(self) -> str:
+        return f"{self.m_vl}x{self.n_vl}"
+
+    @property
+    def stem(self) -> str:
+        return f"{self.data_type}_{self.pack_name}_{self.tile_label}_{self.trans_a}{self.trans_b}"
 
 
 def _pack_flags(pack: str) -> Tuple[bool, bool]:
@@ -82,24 +100,28 @@ def _variant_dir(output_dir: Path, pack: str, m_vl: int, n_vl: int) -> Path:
     return output_dir / f"{pack}_{m_vl}x{n_vl}"
 
 
-def _placeholder_lda(trans_a: str) -> int:
-    return PLACEHOLDER_DIM if trans_a == "N" else PLACEHOLDER_DIM
+def _selector_variant_dir(output_dir: Path, fp16_pack: str, fp16_m_vl: int, fp16_n_vl: int) -> Path:
+    return output_dir / f"bf16_selector_fp16_{fp16_pack}_{fp16_m_vl}x{fp16_n_vl}"
 
 
-def _placeholder_ldb(trans_b: str) -> int:
-    return PLACEHOLDER_DIM if trans_b == "N" else PLACEHOLDER_DIM
+def _placeholder_lda(_trans_a: str) -> int:
+    return PLACEHOLDER_DIM
+
+
+def _placeholder_ldb(_trans_b: str) -> int:
+    return PLACEHOLDER_DIM
 
 
 def _backend_spec(
     data_type: str,
     trans_a: str,
     trans_b: str,
-    pack_a: bool,
-    pack_b: bool,
+    pack_name: str,
     m_vl: int,
     n_vl: int,
 ) -> BackendSpec:
-    uniq_id = f"bundle_{data_type}_{trans_a.lower()}{trans_b.lower()}_{m_vl}x{n_vl}"
+    pack_a, pack_b = _pack_flags(pack_name)
+    uniq_id = f"bundle_{data_type}_{pack_name}_{trans_a.lower()}{trans_b.lower()}_{m_vl}x{n_vl}"
     spec = KernelSpec.from_args(
         PLACEHOLDER_DIM,
         PLACEHOLDER_DIM,
@@ -121,19 +143,18 @@ def _backend_spec(
         data_type=data_type,
         trans_a=trans_a,
         trans_b=trans_b,
+        pack_name=pack_name,
+        pack_a=pack_a,
+        pack_b=pack_b,
+        m_vl=m_vl,
+        n_vl=n_vl,
         driver_name=driver_name,
         kernel_name=kernel_name,
         uniq_id=uniq_id,
     )
 
 
-def _generate_backend_sources(
-    backend: BackendSpec,
-    pack_a: bool,
-    pack_b: bool,
-    m_vl: int,
-    n_vl: int,
-) -> Tuple[str, str]:
+def _generate_backend_sources(backend: BackendSpec) -> Tuple[str, str]:
     asm_code = generate_sme_asm(
         PLACEHOLDER_DIM,
         PLACEHOLDER_DIM,
@@ -146,10 +167,10 @@ def _generate_backend_sources(
         backend.trans_b,
         backend.uniq_id,
         backend.data_type,
-        m_vl,
-        n_vl,
-        pack_a,
-        pack_b,
+        backend.m_vl,
+        backend.n_vl,
+        backend.pack_a,
+        backend.pack_b,
     )
     driver_code = generate_sme_driver_cpp(
         PLACEHOLDER_DIM,
@@ -163,10 +184,10 @@ def _generate_backend_sources(
         backend.trans_b,
         backend.uniq_id,
         backend.data_type,
-        m_vl,
-        n_vl,
-        pack_a,
-        pack_b,
+        backend.m_vl,
+        backend.n_vl,
+        backend.pack_a,
+        backend.pack_b,
     )
     return asm_code, driver_code
 
@@ -207,23 +228,21 @@ def _validate_hosted_toolchain() -> None:
         )
 
 
-def _generate_wrapper_cpp(backends: Sequence[BackendSpec]) -> str:
-    bf16_backends = [backend for backend in backends if backend.data_type == "bf16"]
-    fp16_backends = [backend for backend in backends if backend.data_type == "fp16"]
+def _decl_lines(selected: Sequence[BackendSpec]) -> str:
+    lines = []
+    for backend in selected:
+        input_type, _ = _normalize_precision_input_type(backend.data_type)
+        lines.append(
+            "extern \"C\" int "
+            f"{backend.driver_name}(const long M, const long N, const long K, const float alpha, "
+            f"const {input_type} *A, const {input_type} *B, const float beta, float *C, "
+            "const long lda, const long ldb, const long ldc);"
+        )
+    return "\n".join(lines)
 
-    def decl_lines(selected: Sequence[BackendSpec]) -> str:
-        lines = []
-        for backend in selected:
-            input_type, _ = _normalize_precision_input_type(backend.data_type)
-            lines.append(
-                "extern \"C\" int "
-                f"{backend.driver_name}(const long M, const long N, const long K, const float alpha, "
-                f"const {input_type} *A, const {input_type} *B, const float beta, float *C, "
-                "const long lda, const long ldb, const long ldc);"
-            )
-        return "\n".join(lines)
 
-    def dispatch_code(selected: Sequence[BackendSpec], input_type: str) -> str:
+def _emit_wrapper_dispatch(selected: Sequence[BackendSpec], selector_model: Dict[str, object] | None) -> str:
+    if selector_model is None:
         lines = []
         for backend in selected:
             lines.append(
@@ -235,8 +254,59 @@ def _generate_wrapper_cpp(backends: Sequence[BackendSpec]) -> str:
         lines.append("    return -1;\n")
         return "".join(lines)
 
+    lines = ["    const AutoGemmBf16Choice choice = autogemm_predict_bf16_choice(M, N, K, ta, tb);\n"]
+    for backend in selected:
+        lines.append(
+            "    if "
+            f"(ta == '{backend.trans_a}' && tb == '{backend.trans_b}' && "
+            f"std::strcmp(choice.pack, \"{backend.pack_name}\") == 0 && "
+            f"std::strcmp(choice.tile, \"{backend.tile_label}\") == 0) {{\n"
+            f"        return {backend.driver_name}(M, N, K, alpha, A, B, beta, C, lda, ldb, ldc);\n"
+            "    }\n"
+        )
+    lines.append(
+        '    std::fprintf(stderr, "autogemm: selector produced unsupported combo %s_%s for %c%c\\n", '
+        "choice.pack, choice.tile, ta, tb);\n"
+    )
+    lines.append("    return -1;\n")
+    return "".join(lines)
+
+
+def _emit_benchmark_driver_lookup(selected: Sequence[BackendSpec], selector_model: Dict[str, object] | None) -> str:
+    if selector_model is None:
+        lines = []
+        for backend in selected:
+            lines.append(
+                f"    if (ta == '{backend.trans_a}' && tb == '{backend.trans_b}') {{\n"
+                f"        return {backend.driver_name};\n"
+                "    }\n"
+            )
+        lines.append("    return nullptr;\n")
+        return "".join(lines)
+
+    lines = ["    const AutoGemmBf16Choice choice = autogemm_predict_bf16_choice(M, N, K, ta, tb);\n"]
+    for backend in selected:
+        lines.append(
+            "    if "
+            f"(ta == '{backend.trans_a}' && tb == '{backend.trans_b}' && "
+            f"std::strcmp(choice.pack, \"{backend.pack_name}\") == 0 && "
+            f"std::strcmp(choice.tile, \"{backend.tile_label}\") == 0) {{\n"
+            f"        return {backend.driver_name};\n"
+            "    }\n"
+        )
+    lines.append("    return nullptr;\n")
+    return "".join(lines)
+
+
+def _generate_wrapper_cpp(
+    backends: Sequence[BackendSpec],
+    bf16_selector_model: Dict[str, object] | None = None,
+) -> str:
+    bf16_backends = [backend for backend in backends if backend.data_type == "bf16"]
+    fp16_backends = [backend for backend in backends if backend.data_type == "fp16"]
     bf16_input, bf16_include = _normalize_precision_input_type("bf16")
     fp16_input, _ = _normalize_precision_input_type("fp16")
+    selector_code = "" if bf16_selector_model is None else generate_cpp_selector(bf16_selector_model)
 
     return f"""
 #include <arm_sve.h>
@@ -257,8 +327,8 @@ enum CBLAS_TRANSPOSE {{
     CblasConjTrans = 113,
 }};
 
-{decl_lines(bf16_backends)}
-{decl_lines(fp16_backends)}
+{_decl_lines(bf16_backends)}
+{_decl_lines(fp16_backends)}
 
 static inline char autogemm_normalize_transpose_char(char value) {{
     const char normalized = static_cast<char>(std::toupper(static_cast<unsigned char>(value)));
@@ -306,6 +376,7 @@ static inline void autogemm_report_status(const char *func_name, int status) {{
     }}
 }}
 
+{selector_code}
 static int autogemm_dispatch_sbgemm(
     char transa,
     char transb,
@@ -334,7 +405,7 @@ static int autogemm_dispatch_sbgemm(
         autogemm_scale_c_col_major(M, N, beta, C, ldc);
         return 0;
     }}
-{dispatch_code(bf16_backends, bf16_input)}
+{_emit_wrapper_dispatch(bf16_backends, bf16_selector_model)}
 }}
 
 static int autogemm_dispatch_shgemm(
@@ -365,7 +436,7 @@ static int autogemm_dispatch_shgemm(
         autogemm_scale_c_col_major(M, N, beta, C, ldc);
         return 0;
     }}
-{dispatch_code(fp16_backends, fp16_input)}
+{_emit_wrapper_dispatch(fp16_backends, None)}
 }}
 
 extern "C" void sbgemm_(
@@ -530,26 +601,19 @@ extern "C" void cblas_shgemm(
 """
 
 
-def _generate_benchmark_cpp(selected_backends: Sequence[BackendSpec], data_type: str) -> str:
+def _generate_benchmark_cpp(
+    selected_backends: Sequence[BackendSpec],
+    data_type: str,
+    bf16_selector_model: Dict[str, object] | None = None,
+) -> str:
     input_type, include_block = _normalize_precision_input_type(data_type)
-    driver_decl_lines = "\n".join(
-        [
-            "extern \"C\" int "
-            f"{backend.driver_name}(const long M, const long N, const long K, const float alpha, "
-            f"const {input_type} *A, const {input_type} *B, const float beta, float *C, "
-            "const long lda, const long ldb, const long ldc);"
-            for backend in selected_backends
-        ]
+    selector_code = ""
+    if data_type == "bf16" and bf16_selector_model is not None:
+        selector_code = generate_cpp_selector(bf16_selector_model)
+    dispatch_code = _emit_benchmark_driver_lookup(
+        selected_backends,
+        bf16_selector_model if data_type == "bf16" else None,
     )
-    dispatch_lines = []
-    for backend in selected_backends:
-        dispatch_lines.append(
-            f"    if (ta == '{backend.trans_a}' && tb == '{backend.trans_b}') {{\n"
-            f"        return {backend.driver_name};\n"
-            "    }\n"
-        )
-    dispatch_lines.append("    return nullptr;\n")
-    dispatch_code = "".join(dispatch_lines)
     return rf"""
 #include <arm_neon.h>
 #include <cstdint>
@@ -575,7 +639,7 @@ using DriverFn = int (*)(
     const long ldb,
     const long ldc
 );
-{driver_decl_lines}
+{_decl_lines(selected_backends)}
 
 struct BenchArgs {{
     int m = 256;
@@ -767,7 +831,8 @@ static inline double now_seconds() {{
     return static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) * 1.0e-9;
 }}
 
-static DriverFn resolve_driver(char ta, char tb) {{
+{selector_code}
+static DriverFn resolve_driver(long M, long N, long K, char ta, char tb) {{
 {dispatch_code}
 }}
 
@@ -777,7 +842,7 @@ static ResolvedCall resolve_call(const BenchArgs &args, const InputType *a, cons
     const char tb = normalize_char(args.transb);
     const bool row_major_cblas = (args.api == 'C' && args.order == 'R');
     if (row_major_cblas) {{
-        resolved.driver = resolve_driver(tb, ta);
+        resolved.driver = resolve_driver(args.n, args.m, args.k, tb, ta);
         resolved.A = b;
         resolved.B = a;
         resolved.C = c;
@@ -790,7 +855,7 @@ static ResolvedCall resolve_call(const BenchArgs &args, const InputType *a, cons
         return resolved;
     }}
 
-    resolved.driver = resolve_driver(ta, tb);
+    resolved.driver = resolve_driver(args.m, args.n, args.k, ta, tb);
     resolved.A = a;
     resolved.B = b;
     resolved.C = c;
@@ -965,21 +1030,14 @@ def _run_command(command: Sequence[str], cwd: Path) -> None:
     subprocess.run(command, cwd=str(cwd), check=True)
 
 
-def _compile_backend_objects(
-    variant_dir: Path,
-    backend: BackendSpec,
-    pack_a: bool,
-    pack_b: bool,
-    m_vl: int,
-    n_vl: int,
-) -> List[Path]:
-    asm_code, driver_code = _generate_backend_sources(backend, pack_a, pack_b, m_vl, n_vl)
+def _compile_backend_objects(variant_dir: Path, backend: BackendSpec) -> List[Path]:
+    asm_code, driver_code = _generate_backend_sources(backend)
     gen_dir = variant_dir / "gen"
     obj_dir = variant_dir / "obj"
-    asm_path = gen_dir / f"{backend.data_type}_{backend.trans_a}{backend.trans_b}_kernel.S"
-    driver_path = gen_dir / f"{backend.data_type}_{backend.trans_a}{backend.trans_b}_driver.cpp"
-    asm_obj = obj_dir / f"{backend.data_type}_{backend.trans_a}{backend.trans_b}_kernel.o"
-    driver_obj = obj_dir / f"{backend.data_type}_{backend.trans_a}{backend.trans_b}_driver.o"
+    asm_path = gen_dir / f"{backend.stem}_kernel.S"
+    driver_path = gen_dir / f"{backend.stem}_driver.cpp"
+    asm_obj = obj_dir / f"{backend.stem}_kernel.o"
+    driver_obj = obj_dir / f"{backend.stem}_driver.o"
     _write_file(asm_path, asm_code)
     _write_file(driver_path, driver_code)
 
@@ -995,7 +1053,12 @@ def _compile_backend_objects(
     return [asm_obj, driver_obj]
 
 
-def _compile_wrapper_and_library(variant_dir: Path, backends: Sequence[BackendSpec], objects: Sequence[Path]) -> Path:
+def _compile_wrapper_and_library(
+    variant_dir: Path,
+    backends: Sequence[BackendSpec],
+    objects: Sequence[Path],
+    bf16_selector_model: Dict[str, object] | None = None,
+) -> Path:
     gen_dir = variant_dir / "gen"
     obj_dir = variant_dir / "obj"
     lib_dir = variant_dir / "lib"
@@ -1003,7 +1066,7 @@ def _compile_wrapper_and_library(variant_dir: Path, backends: Sequence[BackendSp
     wrapper_obj = obj_dir / "autogemm_wrapper.o"
     lib_path = lib_dir / SHARED_LIB_NAME
 
-    _write_file(wrapper_src, _generate_wrapper_cpp(backends))
+    _write_file(wrapper_src, _generate_wrapper_cpp(backends, bf16_selector_model))
     _run_command(
         [CXX, *_common_target_flags(), MARCH_FLAGS["bf16"], *COMMON_CXX_FLAGS, "-c", str(wrapper_src), "-o", str(wrapper_obj)],
         variant_dir,
@@ -1025,7 +1088,12 @@ def _compile_wrapper_and_library(variant_dir: Path, backends: Sequence[BackendSp
     return lib_path
 
 
-def _compile_benchmark_executable(variant_dir: Path, data_type: str, backends: Sequence[BackendSpec]) -> Path:
+def _compile_benchmark_executable(
+    variant_dir: Path,
+    data_type: str,
+    backends: Sequence[BackendSpec],
+    bf16_selector_model: Dict[str, object] | None = None,
+) -> Path:
     gen_dir = variant_dir / "gen"
     bin_dir = variant_dir / "bin"
     bench_src = gen_dir / ("benchmark_sbgemm.cpp" if data_type == "bf16" else "benchmark_shgemm.cpp")
@@ -1035,7 +1103,14 @@ def _compile_benchmark_executable(variant_dir: Path, data_type: str, backends: S
     march_flag = MARCH_FLAGS["bf16"] if data_type == "bf16" else MARCH_FLAGS["fp16"]
     selected_backends = [backend for backend in backends if backend.data_type == data_type]
 
-    _write_file(bench_src, _generate_benchmark_cpp(selected_backends, data_type))
+    _write_file(
+        bench_src,
+        _generate_benchmark_cpp(
+            selected_backends,
+            data_type,
+            bf16_selector_model if data_type == "bf16" else None,
+        ),
+    )
 
     _run_command(
         [
@@ -1058,24 +1133,43 @@ def _compile_benchmark_executable(variant_dir: Path, data_type: str, backends: S
     return bench_path
 
 
-def build_bundle(pack: str, m_vl: int, n_vl: int, output_dir: Path) -> Path:
-    """Generate and compile a fixed pack or VL bundle."""
-    _validate_hosted_toolchain()
-    assert_valid_tile_combo(m_vl, n_vl)
-    pack_a, pack_b = _pack_flags(pack)
-    variant_dir = _variant_dir(output_dir.resolve(), pack, m_vl, n_vl)
+def _build_backends(pack: str, m_vl: int, n_vl: int) -> List[BackendSpec]:
+    backends: List[BackendSpec] = []
+    for data_type in PRECISIONS:
+        for trans_a, trans_b in TRANSPOSE_PAIRS:
+            backends.append(_backend_spec(data_type, trans_a, trans_b, pack, m_vl, n_vl))
+    return backends
+
+
+def _build_selector_backends(fp16_pack: str, fp16_m_vl: int, fp16_n_vl: int) -> List[BackendSpec]:
+    backends: List[BackendSpec] = []
+    for pack_name in PACK_CHOICES:
+        for _tile_name, m_vl, n_vl in BF16_SELECTOR_TILES:
+            for trans_a, trans_b in TRANSPOSE_PAIRS:
+                backends.append(_backend_spec("bf16", trans_a, trans_b, pack_name, m_vl, n_vl))
+    for trans_a, trans_b in TRANSPOSE_PAIRS:
+        backends.append(_backend_spec("fp16", trans_a, trans_b, fp16_pack, fp16_m_vl, fp16_n_vl))
+    return backends
+
+
+def _prepare_variant_dir(variant_dir: Path) -> None:
     if variant_dir.exists():
         shutil.rmtree(variant_dir)
     for subdir in ("gen", "obj", "lib", "bin"):
         (variant_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-    backends: List[BackendSpec] = []
+
+def build_bundle(pack: str, m_vl: int, n_vl: int, output_dir: Path) -> Path:
+    """Generate and compile a fixed pack or VL bundle."""
+    _validate_hosted_toolchain()
+    assert_valid_tile_combo(m_vl, n_vl)
+    variant_dir = _variant_dir(output_dir.resolve(), pack, m_vl, n_vl)
+    _prepare_variant_dir(variant_dir)
+
+    backends = _build_backends(pack, m_vl, n_vl)
     objects: List[Path] = []
-    for data_type in PRECISIONS:
-        for trans_a, trans_b in TRANSPOSE_PAIRS:
-            backend = _backend_spec(data_type, trans_a, trans_b, pack_a, pack_b, m_vl, n_vl)
-            backends.append(backend)
-            objects.extend(_compile_backend_objects(variant_dir, backend, pack_a, pack_b, m_vl, n_vl))
+    for backend in backends:
+        objects.extend(_compile_backend_objects(variant_dir, backend))
 
     _compile_wrapper_and_library(variant_dir, backends, objects)
     _compile_benchmark_executable(variant_dir, "bf16", backends)
@@ -1084,16 +1178,68 @@ def build_bundle(pack: str, m_vl: int, n_vl: int, output_dir: Path) -> Path:
     return variant_dir
 
 
+def build_bf16_selector_bundle(
+    fp16_pack: str,
+    fp16_m_vl: int,
+    fp16_n_vl: int,
+    output_dir: Path,
+) -> Path:
+    """Generate and compile a BF16 selector-aware bundle."""
+    _validate_hosted_toolchain()
+    assert_valid_tile_combo(fp16_m_vl, fp16_n_vl)
+    try:
+        model = load_model()
+    except (FileNotFoundError, ValueError) as exc:
+        raise RuntimeError(
+            "BF16 selector bundle requires generated rules.py. "
+            "Run `python3 src/micro_kernel_SME/bf16_selector/train.py` first."
+        ) from exc
+
+    variant_dir = _selector_variant_dir(output_dir.resolve(), fp16_pack, fp16_m_vl, fp16_n_vl)
+    _prepare_variant_dir(variant_dir)
+
+    backends = _build_selector_backends(fp16_pack, fp16_m_vl, fp16_n_vl)
+    objects: List[Path] = []
+    for backend in backends:
+        objects.extend(_compile_backend_objects(variant_dir, backend))
+
+    _compile_wrapper_and_library(variant_dir, backends, objects, bf16_selector_model=model)
+    _compile_benchmark_executable(variant_dir, "bf16", backends, bf16_selector_model=model)
+    _compile_benchmark_executable(variant_dir, "fp16", backends)
+    _write_file(variant_dir / "bundle_version.txt", BUNDLE_LAYOUT_VERSION + "\n")
+    return variant_dir
+
+
 def main() -> None:
-    """CLI entrypoint for fixed-variant bundle builds."""
-    parser = argparse.ArgumentParser(description="Build a fixed pack/VL BLAS-style shared library bundle.")
-    parser.add_argument("--pack", choices=["nopack", "packa", "packb", "packab"], required=True)
-    parser.add_argument("--m-vl", type=int, required=True)
-    parser.add_argument("--n-vl", type=int, required=True)
+    """CLI entrypoint for fixed or selector-aware bundle builds."""
+    parser = argparse.ArgumentParser(description="Build a fixed pack/VL or BF16 selector-aware BLAS-style shared library bundle.")
+    parser.add_argument("--pack", choices=PACK_CHOICES)
+    parser.add_argument("--m-vl", type=int)
+    parser.add_argument("--n-vl", type=int)
+    parser.add_argument("--bf16-selector", action="store_true", help="Build a selector-aware BF16 bundle with all 12 pack/tile variants.")
+    parser.add_argument("--fp16-pack", choices=PACK_CHOICES, default="nopack")
+    parser.add_argument("--fp16-m-vl", type=int, default=1)
+    parser.add_argument("--fp16-n-vl", type=int, default=4)
     parser.add_argument("--output-dir", type=Path, default=Path("build"))
     args = parser.parse_args()
 
-    variant_dir = build_bundle(args.pack, args.m_vl, args.n_vl, args.output_dir)
+    if args.bf16_selector:
+        variant_dir = build_bf16_selector_bundle(
+            args.fp16_pack,
+            args.fp16_m_vl,
+            args.fp16_n_vl,
+            args.output_dir,
+        )
+    else:
+        missing = [
+            flag_name
+            for flag_name, flag_value in (("--pack", args.pack), ("--m-vl", args.m_vl), ("--n-vl", args.n_vl))
+            if flag_value is None
+        ]
+        if missing:
+            parser.error(f"{', '.join(missing)} are required unless --bf16-selector is set")
+        variant_dir = build_bundle(args.pack, args.m_vl, args.n_vl, args.output_dir)
+
     print(f"[BUILD] Generated bundle at {variant_dir}")
     print(f"[BUILD] Shared library: {variant_dir / 'lib' / SHARED_LIB_NAME}")
     print(f"[BUILD] Benchmark binary: {variant_dir / 'bin' / 'sbgemm.goto'}")

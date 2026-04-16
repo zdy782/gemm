@@ -21,7 +21,7 @@ REPO_ROOT = SCRIPT_DIR.parent.parent
 
 
 BUNDLE_BUILDER = REPO_ROOT / "src" / "micro_kernel_SME" / "half" / "build_blas_bundle.py"
-BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v3"
+BUNDLE_LAYOUT_VERSION = "direct-driver-benchmark-v5"
 
 CONFIG = {
     "numactl": ["numactl", "-m", "7"],
@@ -146,6 +146,25 @@ def bundle_version_file(variant: Mapping[str, object]) -> Path:
     return bundle_variant_dir(variant) / "bundle_version.txt"
 
 
+def selector_bundle_dir() -> Path:
+    """Return the output directory for the BF16 selector-aware bundle."""
+
+    return CONFIG["bundle_output_root"] / "bf16_selector_fp16_nopack_1x4"
+
+
+def selector_bundle_version_file() -> Path:
+    """Return the selector bundle layout version file path."""
+
+    return selector_bundle_dir() / "bundle_version.txt"
+
+
+def selector_benchmark_binary(data_type: str) -> Path:
+    """Return the benchmark executable path for the selector bundle."""
+
+    binary_name = "sbgemm.goto" if data_type == "bf16" else "shgemm.goto"
+    return selector_bundle_dir() / "bin" / binary_name
+
+
 def ensure_bundle(variant: Mapping[str, object]) -> None:
     """Build a fixed variant bundle when it is missing or stale."""
 
@@ -175,6 +194,30 @@ def ensure_bundle(variant: Mapping[str, object]) -> None:
         f"[INFO] Building fixed bundle for pack={variant['pack_name']}, "
         f"tile={variant['m_vl']}x{variant['n_vl']}"
     )
+    run_command(build_cmd)
+
+
+def ensure_selector_bundle() -> None:
+    """Build the selector-aware BF16 bundle when it is missing or stale."""
+
+    sbgemm_binary = selector_benchmark_binary("bf16")
+    shgemm_binary = selector_benchmark_binary("fp16")
+    version_file = selector_bundle_version_file()
+    version_matches = (
+        version_file.exists()
+        and version_file.read_text(encoding="utf-8").strip() == BUNDLE_LAYOUT_VERSION
+    )
+    if sbgemm_binary.exists() and shgemm_binary.exists() and version_matches:
+        return
+
+    build_cmd = [
+        sys.executable,
+        str(BUNDLE_BUILDER),
+        "--bf16-selector",
+        "--output-dir",
+        str(CONFIG["bundle_output_root"]),
+    ]
+    print("[INFO] Building BF16 selector bundle")
     run_command(build_cmd)
 
 
@@ -322,6 +365,7 @@ def run_exhaustive_evaluation(
     blas_binary: str,
     func_name: str,
     all_cases: Sequence[Mapping[str, object]],
+    predict_combo: bool = False,
 ) -> None:
     """Benchmark all 12 fixed bundle variants and export one aggregate CSV."""
 
@@ -385,6 +429,24 @@ def run_exhaustive_evaluation(
             results[index][f"Mflops_{variant_label}"] = score
             print(f"{score:,.2f}")
 
+    if data_type == "bf16" and predict_combo:
+        ensure_selector_bundle()
+        selector_binary = selector_benchmark_binary("bf16")
+        print("\n" + "=" * 100)
+        print(">>> Starting selector test: predicted BF16 combo <<<")
+        print(f"[INFO] Using selector benchmark binary: {selector_binary}")
+        for index, case in enumerate(all_cases):
+            print(
+                f"[{index + 1}/{total_cases}] {'selector':12}: "
+                f"M={int(case['m'])} N={int(case['n'])} K={int(case['k'])} "
+                f"ta={str(case['transa'])} tb={str(case['transb'])} ... ",
+                end="",
+                flush=True,
+            )
+            score = run_test_case(case, selector_binary)
+            results[index]["Mflops_selector_predicted"] = score
+            print(f"{score:,.2f}")
+
     for variant in ALL_VARIANTS:
         metric_key = f"Mflops_{variant_metric_label(variant, func_name)}"
         improve_key = f"Improve_blas/{variant_metric_label(variant, func_name)}"
@@ -397,6 +459,16 @@ def run_exhaustive_evaluation(
             else:
                 row[improve_key] = "N/A"
 
+    if data_type == "bf16" and predict_combo:
+        for row in results:
+            baseline = float(row["Mflops_KPL_BLAS"])
+            score = float(row["Mflops_selector_predicted"])
+            if baseline > 0.0:
+                improve_value = ((score / baseline) - 1.0) * 100.0
+                row["Improve_blas/selector_predicted"] = f"{improve_value:+.2f}%"
+            else:
+                row["Improve_blas/selector_predicted"] = "N/A"
+
     for row in results:
         best_label = "BLAS"
         best_value = float(row["Mflops_KPL_BLAS"])
@@ -407,6 +479,11 @@ def run_exhaustive_evaluation(
             if metric_value > best_value:
                 best_label = variant_label
                 best_value = metric_value
+        if data_type == "bf16" and predict_combo:
+            selector_value = float(row["Mflops_selector_predicted"])
+            if selector_value > best_value:
+                best_label = "selector_predicted"
+                best_value = selector_value
         row["BestImplementation"] = best_label
         row["BestMflops"] = best_value
 
@@ -431,6 +508,11 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Print the selected evaluation plan without building bundles or running benchmarks.",
+    )
+    parser.add_argument(
+        "--predict_combo",
+        action="store_true",
+        help="For BF16, also benchmark one selector-aware bundle that predicts pack/tile at runtime.",
     )
     return parser.parse_args()
 
@@ -461,6 +543,7 @@ def _truncate_cases(
 def _print_header(
     cases_by_trans: Mapping[str, Sequence[Mapping[str, object]]],
     total_cases: int,
+    predict_combo: bool,
 ) -> None:
     print("=" * 100)
     print("  SME Kernel vs BLAS (Automated BF16 & FP16 Testing)")
@@ -474,13 +557,17 @@ def _print_header(
         f"[INFO] fixed alpha={CONFIG['alpha']}, beta={CONFIG['beta']}; "
         "all 12 fixed pack/tile variants are exported into one aggregate table"
     )
+    if predict_combo:
+        print("[INFO] BF16 will also export a selector_predicted lane from the selector-aware runtime bundle")
 
 
-def _print_dry_run_plan() -> None:
+def _print_dry_run_plan(predict_combo: bool) -> None:
     print("[DRY RUN] No bundles will be built and no benchmark binaries will run.")
     print("[DRY RUN] Bundles that would be prepared:")
     for variant in ALL_VARIANTS:
         print(f"  - {variant['short_label']}")
+    if predict_combo:
+        print("  - bf16_selector_fp16_nopack_1x4")
 
 
 def main() -> None:
@@ -490,10 +577,10 @@ def main() -> None:
     cases_by_trans = generate_test_case_groups_by_trans()
     all_cases = generate_test_cases()
     all_cases, cases_by_trans = _truncate_cases(all_cases, cases_by_trans, args.limit)
-    _print_header(cases_by_trans, len(all_cases))
+    _print_header(cases_by_trans, len(all_cases), args.predict_combo)
 
     if args.dry_run:
-        _print_dry_run_plan()
+        _print_dry_run_plan(args.predict_combo)
         return
 
     test_configs = [
@@ -508,6 +595,7 @@ def main() -> None:
                 blas_binary=config["blas_binary"],
                 func_name=config["func_name"],
                 all_cases=all_cases,
+                predict_combo=args.predict_combo,
             )
     except KeyboardInterrupt:
         print("\n[Interrupted by user] Halting execution and preserving earlier results.")
