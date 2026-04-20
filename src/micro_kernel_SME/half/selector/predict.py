@@ -9,25 +9,25 @@ from typing import Dict, List
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from micro_kernel_SME.bf16_selector.features import (
+from micro_kernel_SME.half.selector.features import (
     SelectorResult,
     build_features,
     combo_label,
     combo_to_pack_flags,
     combo_to_tile_vl,
 )
-from micro_kernel_SME.bf16_selector.tree import predict_classification
+from micro_kernel_SME.half.selector.tree import predict_classification
 
 
 MODEL_PATH = Path(__file__).resolve().with_name("rules.py")
 
 
 def _load_rules_module():
-    spec = importlib.util.spec_from_file_location("micro_kernel_SME.bf16_selector.rules", MODEL_PATH)
+    spec = importlib.util.spec_from_file_location("micro_kernel_SME.half.selector.rules", MODEL_PATH)
     if spec is None or spec.loader is None:
         raise FileNotFoundError(f"selector rules file not found: {MODEL_PATH}")
     module = importlib.util.module_from_spec(spec)
-    sys.modules.setdefault("micro_kernel_SME.bf16_selector.rules", module)
+    sys.modules.setdefault("micro_kernel_SME.half.selector.rules", module)
     spec.loader.exec_module(module)
     return module
 

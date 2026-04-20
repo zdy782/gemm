@@ -20,6 +20,7 @@ class SmallSideLoadSpec:
     gather_offset: str
     low_tmp: str
     high_tmp: str
+    gather_index_k1: str = ""
 
 
 @dataclass(frozen=True)
@@ -217,16 +218,16 @@ def _gen_half_contiguous_last_k(ctx, base, role, dst, lane, low_tmp, zero_tmp, n
     )
 
 
-def _gen_half_gather(ctx, base, role, index_vec, dst, low_tmp, high_tmp, pair_base):
-    # Small gather paths only materialize one logical operand at a time, so
-    # they never need a temporary paired-load predicate.
+def _gen_half_gather(ctx, base, role, index_vec, dst, low_tmp, high_tmp, pair_base, index_k1=""):
     code_str = f""
     code_str += f"ld1h      {low_tmp}.s, {_half_pred(ctx, role)}/z, [{base}, {index_vec}.s, UXTW]\n"
-    code_str += f"add       {pair_base}, {base}, #2\n"
-    code_str += f"ld1h      {high_tmp}.s, {_half_pred(ctx, role)}/z, [{pair_base}, {index_vec}.s, UXTW]\n"
-    code_str += f"uzp1      {low_tmp}.h, {low_tmp}.h, {low_tmp}.h\n"
-    code_str += f"uzp1      {high_tmp}.h, {high_tmp}.h, {high_tmp}.h\n"
-    code_str += f"zip1      {dst}.h, {low_tmp}.h, {high_tmp}.h\n"
+    if index_k1:
+        code_str += f"ld1h      {high_tmp}.s, {_half_pred(ctx, role)}/z, [{base}, {index_k1}.s, UXTW]\n"
+    else:
+        code_str += f"add       {pair_base}, {base}, #2\n"
+        code_str += f"ld1h      {high_tmp}.s, {_half_pred(ctx, role)}/z, [{pair_base}, {index_vec}.s, UXTW]\n"
+    code_str += f"lsl       {high_tmp}.s, {high_tmp}.s, #16\n"
+    code_str += f"orr       {dst}.d, {low_tmp}.d, {high_tmp}.d\n"
     return code_str
 
 
@@ -251,6 +252,7 @@ def _small_side_spec(ctx, config, side):
             gather_offset=regs.address.pA_OFFSET,
             low_tmp=regs.vectors.a_low,
             high_tmp=regs.vectors.pair_high,
+            gather_index_k1=config.a_gather_index_k1,
         )
     return SmallSideLoadSpec(
         mode=config.b_mode,
@@ -262,6 +264,7 @@ def _small_side_spec(ctx, config, side):
         gather_offset=regs.address.pB_OFFSET,
         low_tmp=config.b_low_tmp,
         high_tmp=config.b_high_tmp,
+        gather_index_k1=config.b_gather_index_k1,
     )
 
 
@@ -367,12 +370,12 @@ def _gen_small_side_lane(ctx, side, dst, role, lane, next_dst=None, next_role=No
         side.low_tmp,
         side.high_tmp,
         ctx.registers.address.TMP_PTR2,
+        index_k1=side.gather_index_k1,
     )
     return code_str
 
 
 def _gen_small_svindex(ctx, config):
-    # Small gather models precompute one stride-scaled index vector per side before entering the tile loops.
     regs = ctx.registers
     shift = get_half_input_size_shift()
     code_str = f""
@@ -380,10 +383,14 @@ def _gen_small_svindex(ctx, config):
         code_str += f"lsl     {regs.counters.TMP_CNT}, {regs.params.LDA}, #{shift}\n"
         code_str += f"mov     {regs.vectors.a_index}.s, #0\n"
         code_str += f"index   {regs.vectors.a_index}.s, #0, {regs.counters.TMP_CNT_SIN}\n"
+        if config.a_gather_index_k1:
+            code_str += f"index   {config.a_gather_index_k1}.s, #2, {regs.counters.TMP_CNT_SIN}\n"
     if config.b_mode == LOAD_GATHER:
         code_str += f"lsl     {regs.counters.TMP_CNT}, {regs.params.LDB}, #{shift}\n"
         code_str += f"mov     {regs.vectors.b_index}.s, #0\n"
         code_str += f"index   {regs.vectors.b_index}.s, #0, {regs.counters.TMP_CNT_SIN}\n"
+        if config.b_gather_index_k1:
+            code_str += f"index   {config.b_gather_index_k1}.s, #2, {regs.counters.TMP_CNT_SIN}\n"
     return code_str
 
 
@@ -447,6 +454,8 @@ class SmallModelConfig:
     b_mode: str
     b_low_tmp: str
     b_high_tmp: str
+    b_gather_index_k1: str = ""
+    a_gather_index_k1: str = ""
 
 
 @dataclass(frozen=True)
@@ -745,7 +754,7 @@ class GeneralGemmModel:
         return f"mov      {regs.pointers.pAt}, {regs.pointers.pA0}\n"
 
 
-small_nn_model = SmallGemmModel(SmallModelConfig("small_nn", LOAD_CONTIGUOUS, LOAD_GATHER, "z26", "z29"))
+small_nn_model = SmallGemmModel(SmallModelConfig("small_nn", LOAD_CONTIGUOUS, LOAD_GATHER, "z26", "z29", b_gather_index_k1="z28"))
 small_nt_model = SmallGemmModel(SmallModelConfig("small_nt", LOAD_CONTIGUOUS, LOAD_CONTIGUOUS, "z28", "z30"))
 small_tn_model = SmallGemmModel(SmallModelConfig("small_tn", LOAD_GATHER, LOAD_GATHER, "z26", "z29"))
 small_tt_model = SmallGemmModel(SmallModelConfig("small_tt", LOAD_GATHER, LOAD_CONTIGUOUS, "z26", "z27"))

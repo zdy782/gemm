@@ -470,7 +470,6 @@ def save_zacol(ctx, pc, off, za, base_idx, idx, pg, rab0, rc0, beta_zero=False):
         code_str += f"{STNT1}      {rab0}.s, {pg}, [{pc}, {off}, MUL VL]\n"
         return code_str
     code_str += f"{LDNT1}      {rc0}.s, {pg}/z, [{pc}, {off}, MUL VL]\n"
-    code_str += f"fmul         {rc0}.s, {pg}/m, {rc0}.s, {beta_vec}.s\n"
-    code_str += f"fadd         {rc0}.s, {pg}/m, {rc0}.s, {rab0}.s\n"
-    code_str += f"{STNT1}      {rc0}.s, {pg}, [{pc}, {off}, MUL VL]\n"
+    code_str += f"fmla         {rab0}.s, {pg}/m, {rc0}.s, {beta_vec}.s\n"
+    code_str += f"{STNT1}      {rab0}.s, {pg}, [{pc}, {off}, MUL VL]\n"
     return code_str

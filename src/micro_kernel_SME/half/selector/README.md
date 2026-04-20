@@ -12,7 +12,7 @@ the best `pack + tile` combination among the 12 generated kernel variants.
   - [bf16_packab.csv](/Users/wuyihao/Desktop/gemm/ref/data/bf16_packab.csv)
 - `train.py` merges those four files into a standardized wide table at
   [bf16_all.csv](/Users/wuyihao/Desktop/gemm/ref/data/bf16_all.csv).
-- The same training run emits [rules.py](/Users/wuyihao/Desktop/gemm/src/micro_kernel_SME/bf16_selector/rules.py),
+- The same training run emits [rules.py](/Users/wuyihao/Desktop/gemm/src/micro_kernel_SME/half/selector/rules.py),
   which is the only runtime dependency for prediction.
 
 ## Labels
@@ -28,12 +28,12 @@ the best `pack + tile` combination among the 12 generated kernel variants.
 Train the model and regenerate artifacts:
 
 ```bash
-python3 /Users/wuyihao/Desktop/gemm/src/micro_kernel_SME/bf16_selector/train.py
+python3 /Users/wuyihao/Desktop/gemm/src/micro_kernel_SME/half/selector/train.py
 ```
 
 Predict one shape:
 
 ```bash
-python3 /Users/wuyihao/Desktop/gemm/src/micro_kernel_SME/bf16_selector/predict.py \
+python3 /Users/wuyihao/Desktop/gemm/src/micro_kernel_SME/half/selector/predict.py \
   --M 64 --N 256 --K 32 --transA T --transB N --show-path
 ```

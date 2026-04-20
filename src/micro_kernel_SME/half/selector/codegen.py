@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict
 
-from micro_kernel_SME.bf16_selector.features import PACK_LABELS
+from micro_kernel_SME.half.selector.features import PACK_LABELS
 
 
 FEATURE_EXPRESSIONS = {

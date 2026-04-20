@@ -150,8 +150,16 @@ def _kernel_load_inst(ctx):
     return LD1_H if ctx.spec.gemm_type is GemmType.SMALL else LDNT1_H
 
 
+def _gen_prefetch_hints(ctx):
+    regs = ctx.registers
+    code_str = f"prfm    PLDL1KEEP, [{regs.pointers.pA0}, #256]\n"
+    code_str += f"prfm    PLDL1KEEP, [{regs.pointers.pB0}, #256]\n"
+    return code_str
+
+
 def _gen_kernel_bc(ctx, mvl, nvl, last_k=False, load_inst=None, pair_plan=UNPAIRED_SMALL_KERNEL_PLAN):
     code_parts = []
+    code_parts.append(_gen_prefetch_hints(ctx))
     # Reusing the four register variants twice matches the handwritten K-body cadence and keeps scheduling regular.
     for variant_idx in (0, 1, 2, 3, 0, 1, 2, 3):
         code_parts.append(

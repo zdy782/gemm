@@ -26,8 +26,8 @@ from typing import Dict, List, Sequence, Tuple
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from micro_kernel_SME.bf16_selector.codegen import generate_cpp_selector
-from micro_kernel_SME.bf16_selector.predict import load_model
+from micro_kernel_SME.half.selector.codegen import generate_cpp_selector
+from micro_kernel_SME.half.selector.predict import load_model
 from micro_kernel_SME.half.generate_sme_test import build_symbol_names, generate_sme_asm, generate_sme_driver_cpp
 from micro_kernel_SME.half.global_config import assert_valid_tile_combo
 from micro_kernel_SME.half.model_spec import KernelSpec
@@ -1192,7 +1192,7 @@ def build_bf16_selector_bundle(
     except (FileNotFoundError, ValueError) as exc:
         raise RuntimeError(
             "BF16 selector bundle requires generated rules.py. "
-            "Run `python3 src/micro_kernel_SME/bf16_selector/train.py` first."
+            "Run `python3 src/micro_kernel_SME/half/selector/train.py` first."
         ) from exc
 
     variant_dir = _selector_variant_dir(output_dir.resolve(), fp16_pack, fp16_m_vl, fp16_n_vl)

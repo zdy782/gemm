@@ -143,7 +143,7 @@ def _resolve_selector_choice(
     selector_result = None
 
     if predict_combo and data_type == "bf16":
-        from micro_kernel_SME.bf16_selector import predict_bf16_combo
+        from micro_kernel_SME.half.selector import predict_bf16_combo
 
         selector_result = predict_bf16_combo(M, N, K, transA, transB)
         selected_pack_a = selector_result.pack_a
